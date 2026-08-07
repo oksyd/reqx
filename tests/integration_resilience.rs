@@ -635,7 +635,10 @@ async fn proxy_forwards_http_request_via_absolute_form() {
 
     assert_eq!(response.status().as_u16(), 200);
     assert_eq!(response.text_lossy(), "proxy-ok");
-    assert_eq!(upstream.served_count(), 1);
+    assert_eq!(
+        upstream.wait_for_served_count(1, Duration::from_millis(200)),
+        1
+    );
 
     let tunnel_targets = proxy.tunnel_targets();
     assert!(tunnel_targets.is_empty());
@@ -755,7 +758,10 @@ async fn max_in_flight_enforces_single_active_request() {
     }
 
     assert!(started.elapsed() >= Duration::from_millis(300));
-    assert_eq!(server.served_count(), 3);
+    assert_eq!(
+        server.wait_for_served_count(3, Duration::from_millis(200)),
+        3
+    );
     assert_eq!(server.max_active(), 1);
 }
 
@@ -977,7 +983,10 @@ async fn max_in_flight_queue_wait_respects_total_timeout_deadline() {
     }
 
     drop(held_stream);
-    assert_eq!(server.served_count(), 1);
+    assert_eq!(
+        server.wait_for_served_count(1, Duration::from_millis(200)),
+        1
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1097,7 +1106,10 @@ async fn adaptive_concurrency_queue_wait_respects_total_timeout_deadline() {
         .expect("join first request")
         .expect("first request should succeed");
     assert_eq!(first_status, 200);
-    assert_eq!(server.served_count(), 1);
+    assert_eq!(
+        server.wait_for_served_count(1, Duration::from_millis(200)),
+        1
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1166,8 +1178,14 @@ async fn max_in_flight_per_host_limits_each_host_independently() {
         "per-host run took too long: {elapsed:?}"
     );
 
-    assert_eq!(server_a.served_count(), 2);
-    assert_eq!(server_b.served_count(), 2);
+    assert_eq!(
+        server_a.wait_for_served_count(2, Duration::from_millis(200)),
+        2
+    );
+    assert_eq!(
+        server_b.wait_for_served_count(2, Duration::from_millis(200)),
+        2
+    );
     assert_eq!(server_a.max_active(), 1);
     assert_eq!(server_b.max_active(), 1);
 }
@@ -1237,8 +1255,14 @@ async fn max_in_flight_per_host_distinguishes_same_host_different_ports() {
         "requests to different ports should not share one per-host limiter: {elapsed:?}"
     );
 
-    assert_eq!(server_a.served_count(), 2);
-    assert_eq!(server_b.served_count(), 2);
+    assert_eq!(
+        server_a.wait_for_served_count(2, Duration::from_millis(200)),
+        2
+    );
+    assert_eq!(
+        server_b.wait_for_served_count(2, Duration::from_millis(200)),
+        2
+    );
     assert_eq!(server_a.max_active(), 1);
     assert_eq!(server_b.max_active(), 1);
 }
@@ -1310,10 +1334,19 @@ async fn max_in_flight_per_host_applies_to_redirect_target_host() {
         elapsed >= Duration::from_millis(420),
         "redirect target host should be serialized by per-host limiter: {elapsed:?}"
     );
-    assert_eq!(target.served_count(), 4);
+    assert_eq!(
+        target.wait_for_served_count(4, Duration::from_millis(200)),
+        4
+    );
     assert_eq!(target.max_active(), 1);
-    assert_eq!(source_a.served_count(), 2);
-    assert_eq!(source_b.served_count(), 2);
+    assert_eq!(
+        source_a.wait_for_served_count(2, Duration::from_millis(200)),
+        2
+    );
+    assert_eq!(
+        source_b.wait_for_served_count(2, Duration::from_millis(200)),
+        2
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1352,7 +1385,10 @@ async fn total_timeout_interrupts_retry_loop_with_retry_after() {
         other => panic!("unexpected error variant: {other}"),
     }
 
-    assert_eq!(server.served_count(), 1);
+    assert_eq!(
+        server.wait_for_served_count(1, Duration::from_millis(200)),
+        1
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
