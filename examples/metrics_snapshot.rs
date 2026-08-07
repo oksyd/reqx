@@ -1,0 +1,36 @@
+use std::time::Duration;
+
+use reqx::prelude::{Client, RetryPolicy};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::builder("https://postman-echo.com")
+        .client_name("reqx-example-metrics")
+        .request_timeout(Duration::from_secs(3))
+        .retry_policy(RetryPolicy::standard().max_attempts(2))
+        .metrics_enabled(true)
+        .build()?;
+
+    let _ = client.get("/status/200").send().await;
+    let _ = client.get("/status/503").send().await;
+
+    let metrics = client.metrics_snapshot();
+    println!(
+        "started={} succeeded={} failed={} retries={}",
+        metrics.requests.started,
+        metrics.requests.succeeded,
+        metrics.requests.failed,
+        metrics.requests.retries
+    );
+    println!(
+        "timeout_transport={} timeout_response_body={} in_flight={} avg_latency_ms={:.2}",
+        metrics.timeouts.transport,
+        metrics.timeouts.response_body,
+        metrics.requests.in_flight,
+        metrics.latency.average_ms
+    );
+    println!("status_counts={:?}", metrics.responses.status_counts);
+    println!("errors_by_code={:?}", metrics.errors.by_code);
+
+    Ok(())
+}

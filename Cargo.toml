@@ -1,0 +1,206 @@
+[package]
+name = "reqx"
+version = "0.1.41"
+edition = "2024"
+rust-version = "1.97.1"
+description = "Rust HTTP transport client for API SDK libraries with retry, timeout, idempotency, proxy, and pluggable TLS backends"
+readme = "README.md"
+license = "MIT"
+documentation = "https://docs.rs/reqx"
+homepage = "https://github.com/oksyd/reqx"
+repository = "https://github.com/oksyd/reqx"
+categories = ["api-bindings", "network-programming", "web-programming::http-client"]
+keywords = ["http", "sdk", "api-client", "rustls", "native-tls"]
+include = [
+  "Cargo.toml",
+  "README.md",
+  "LICENSE",
+  "src/**",
+  "examples/**",
+  "tests/**"
+]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[features]
+default = ["async-tls-rustls-ring", "compression-gzip"]
+
+# Internal transport mode switches (downstream crates should enable concrete TLS combos below).
+_async = ["dep:tokio", "dep:tokio-util", "dep:futures-core", "dep:futures-util", "dep:http-body-util", "dep:hyper", "dep:hyper-util", "dep:tower-service"]
+_blocking = ["dep:ureq"]
+
+# Optional response decoding capabilities.
+compression = ["compression-brotli", "compression-gzip", "compression-zstd"]
+compression-brotli = ["dep:brotli"]
+compression-gzip = ["dep:flate2"]
+compression-zstd = ["dep:zstd"]
+
+# Backend-agnostic multipart upload orchestration and checkpoint checksums.
+resumable-upload = ["dep:md5", "dep:sha2", "serde/derive"]
+
+# Additive transport+TLS capabilities. Multiple backends may be compiled and
+# selected at runtime with `ClientBuilder::tls_backend`.
+async-tls-rustls-aws-lc-rs = ["_async", "dep:hyper-rustls", "dep:rustls", "dep:rustls-native-certs", "dep:webpki-roots", "hyper-rustls/aws-lc-rs", "rustls/aws_lc_rs"]
+async-tls-rustls-ring = ["_async", "dep:hyper-rustls", "dep:rustls", "dep:rustls-native-certs", "dep:webpki-roots", "hyper-rustls/ring", "rustls/ring"]
+async-tls-native = ["_async", "dep:hyper-tls", "hyper-tls/alpn"]
+blocking-tls-rustls-ring = ["_blocking", "dep:rustls", "dep:rustls-native-certs", "dep:webpki-root-certs", "ureq/rustls", "ureq/platform-verifier"]
+blocking-tls-rustls-aws-lc-rs = ["_blocking", "dep:rustls", "dep:rustls-native-certs", "dep:webpki-root-certs", "ureq/rustls-no-provider", "ureq/rustls-webpki-roots", "ureq/platform-verifier", "rustls/aws_lc_rs"]
+blocking-tls-native = ["_blocking", "dep:native-tls", "ureq/native-tls"]
+
+otel = ["dep:opentelemetry"]
+
+[dependencies]
+# Async runtime and stream primitives.
+tokio = { version = "1.52.1", default-features = false, features = ["io-util", "rt", "sync", "time"], optional = true }
+tokio-util = { version = "0.7.18", default-features = false, features = ["io"], optional = true }
+futures-core = { version = "0.3.32", default-features = false, features = ["std"], optional = true }
+futures-util = { version = "0.3.32", default-features = false, features = ["std"], optional = true }
+bytes = { version = "1.11.1", default-features = false, features = ["std"] }
+
+# HTTP stack.
+http = { version = "1.4.0", default-features = false, features = ["std"] }
+http-body-util = { version = "0.1.3", default-features = false, optional = true }
+httpdate = { version = "1.0.3", default-features = false }
+hyper = { version = "1.9.0", default-features = false, features = ["client", "http1", "http2"], optional = true }
+hyper-util = { version = "0.1.20", default-features = false, features = ["client-legacy", "client-proxy", "http1", "http2", "tokio"], optional = true }
+tower-service = { version = "0.3.3", default-features = false, optional = true }
+url = { version = "2.5.8", default-features = false, features = ["std"] }
+
+# TLS backends (feature-gated).
+hyper-rustls = { version = "0.27.9", default-features = false, features = ["http1", "http2", "webpki-tokio"], optional = true }
+rustls = { version = "0.23.37", default-features = false, features = ["std", "tls12"], optional = true }
+rustls-native-certs = { version = "0.8.3", optional = true }
+hyper-tls = { version = "0.6.0", default-features = false, optional = true }
+native-tls = { version = "0.2.18", optional = true }
+webpki-root-certs = { version = "1.0.6", optional = true }
+webpki-roots = { version = "1.0.7", optional = true }
+
+# Blocking transport backend (feature-gated).
+ureq = { version = "=3.3.0", default-features = false, optional = true }
+
+# Serialization helpers.
+serde = { version = "1.0.228", default-features = false, features = ["std"] }
+serde_json = { version = "1.0.149", default-features = false, features = ["std"] }
+serde_urlencoded = { version = "0.7.1", default-features = false }
+md5 = { version = "0.8.0", default-features = false, optional = true }
+sha2 = { version = "0.11.0", default-features = false, optional = true }
+
+# Content-encoding codecs.
+brotli = { version = "8.0.2", default-features = false, features = ["std"], optional = true }
+flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"], optional = true }
+zstd = { version = "0.13.3", default-features = false, optional = true }
+
+# Error handling, backoff jitter, and telemetry.
+thiserror = { version = "2.0.18", default-features = false, features = ["std"] }
+rand = { version = "0.10.1", default-features = false, features = ["thread_rng"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+opentelemetry = { version = "0.31.0", default-features = false, features = ["metrics", "trace"], optional = true }
+
+[dev-dependencies]
+# Benchmark framework.
+criterion = { version = "0.8.2", default-features = false, features = ["async_tokio"] }
+rcgen = "0.14.7"
+tokio = { version = "1.52.1", default-features = false, features = ["macros", "rt-multi-thread"] }
+tokio-rustls = { version = "0.26.4", default-features = false }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry", "std"] }
+flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }
+
+[[bench]]
+name = "transport"
+harness = false
+required-features = ["_async"]
+
+[[example]]
+name = "basic_json"
+required-features = ["_async"]
+
+[[example]]
+name = "advanced_time_controls"
+required-features = ["_async"]
+
+[[example]]
+name = "concurrency_limits"
+required-features = ["_async"]
+
+[[example]]
+name = "custom_ca_mtls"
+required-features = ["_async"]
+
+[[example]]
+name = "error_handling"
+required-features = ["_async"]
+
+[[example]]
+name = "interceptor_redirect"
+required-features = ["_async"]
+
+[[example]]
+name = "metrics_snapshot"
+required-features = ["_async"]
+
+[[example]]
+name = "proxy_and_no_proxy"
+required-features = ["_async"]
+
+[[example]]
+name = "rate_limit_429"
+required-features = ["_async"]
+
+[[example]]
+name = "request_helpers"
+required-features = ["_async"]
+
+[[example]]
+name = "request_overrides"
+required-features = ["_async"]
+
+[[example]]
+name = "profile_and_observer"
+required-features = ["_async"]
+
+[[example]]
+name = "resilience_controls"
+required-features = ["_async"]
+
+[[example]]
+name = "resumable_upload"
+required-features = ["_async", "resumable-upload"]
+
+[[example]]
+name = "retry_classifier"
+required-features = ["_async"]
+
+[[example]]
+name = "streaming"
+required-features = ["_async"]
+
+[[example]]
+name = "tls_backends"
+required-features = ["_async"]
+
+[[example]]
+name = "blocking_basic"
+required-features = ["_blocking"]
+
+[[example]]
+name = "blocking_streaming"
+required-features = ["_blocking"]
+
+[package.metadata.docs.rs]
+no-default-features = true
+features = ["async-tls-rustls-ring", "blocking-tls-rustls-ring", "compression", "resumable-upload"]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[package.metadata.release]
+push = true
+publish = false
+verify = true
+sign-commit = true
+sign-tag = true
+allow-branch = ["main"]
+tag-prefix = ""
+tag-name = "{{prefix}}{{version}}"
+tag-message = "chore: release {{crate_name}} version {{version}}"
+pre-release-commit-message = "chore: release {{crate_name}} version {{version}}"
+pre-release-hook = ["git", "cliff", "-o", "CHANGELOG.md", "--tag", "{{version}}"]

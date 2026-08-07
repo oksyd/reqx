@@ -1,0 +1,50 @@
+use std::time::Duration;
+
+#[cfg(any(
+    feature = "async-tls-native",
+    feature = "async-tls-rustls-ring",
+    feature = "async-tls-rustls-aws-lc-rs"
+))]
+use reqx::prelude::TlsBackend;
+use reqx::prelude::{Client, TlsRootStore, TlsVersion};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut builder = Client::builder("https://postman-echo.com")
+        .client_name("reqx-example-tls")
+        .request_timeout(Duration::from_secs(3))
+        .tls_root_store(TlsRootStore::System);
+
+    #[cfg(feature = "async-tls-native")]
+    {
+        builder = builder.tls_backend(TlsBackend::NativeTls);
+    }
+
+    #[cfg(all(
+        not(feature = "async-tls-native"),
+        feature = "async-tls-rustls-aws-lc-rs"
+    ))]
+    {
+        builder = builder.tls_backend(TlsBackend::RustlsAwsLcRs);
+    }
+
+    #[cfg(all(
+        not(feature = "async-tls-native"),
+        not(feature = "async-tls-rustls-aws-lc-rs"),
+        feature = "async-tls-rustls-ring"
+    ))]
+    {
+        builder = builder.tls_backend(TlsBackend::RustlsRing);
+    }
+
+    // Cap negotiation at TLS 1.2 for version-intolerant endpoints.
+    builder = builder.tls_max_version(TlsVersion::V1_2);
+
+    let client = builder.build()?;
+    println!("selected tls backend = {:?}", client.tls_backend());
+
+    let response = client.get("/status/200").send().await?;
+    println!("GET /status/200 => status={}", response.status());
+
+    Ok(())
+}

@@ -1,0 +1,412 @@
+use std::error::Error as StdError;
+use std::time::Duration;
+
+use bytes::Bytes;
+use futures_core::Stream;
+use http::header::{CONTENT_LENGTH, CONTENT_TYPE, HeaderName, HeaderValue};
+use http::{HeaderMap, Method};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_util::io::ReaderStream;
+
+use crate::IDEMPOTENCY_KEY_HEADER;
+use crate::body::{RequestBody, stream_req_body};
+use crate::client::Client;
+use crate::core::request_builder::{
+    PreparedRequest, RequestExecutionOptions, RequestExecutionOverrides, RequestPreparation,
+};
+use crate::policy::{RedirectPolicy, StatusPolicy};
+use crate::retry::RetryPolicy;
+use crate::util::{mark_sensitive_header_value, parse_header_name, parse_header_value};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ContentLengthSource {
+    None,
+    RequestHelper,
+    User,
+}
+
+/// Builds and executes a single request against an existing [`Client`].
+///
+/// Create a builder from [`Client::request`] or the verb helpers such as
+/// [`Client::get`] and [`Client::post`].
+///
+/// See also:
+///
+/// - `examples/request_helpers.rs`
+/// - `examples/request_overrides.rs`
+/// - `examples/streaming.rs`
+///
+/// # Example
+///
+/// ```no_run
+/// # #[cfg(feature = "_async")]
+/// # async fn demo() -> reqx::Result<()> {
+/// use reqx::prelude::Client;
+///
+/// let client = Client::builder("https://api.example.com").build()?;
+/// let response = client
+///     .post("/v1/items")
+///     .idempotency_key("item-1")?
+///     .query_pair("verbose", "true")
+///     .json(&serde_json::json!({ "name": "demo" }))?
+///     .send_response()
+///     .await?;
+///
+/// let _status = response.status();
+/// # Ok(())
+/// # }
+/// ```
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(
+        feature = "async-tls-rustls-ring",
+        feature = "async-tls-rustls-aws-lc-rs",
+        feature = "async-tls-native"
+    )))
+)]
+#[must_use = "request builders do nothing until you call a send method"]
+pub struct RequestBuilder<'a> {
+    client: &'a Client,
+    method: Method,
+    path: String,
+    query_pairs: Vec<(String, String)>,
+    headers: HeaderMap,
+    body: Option<RequestBody>,
+    content_length_source: ContentLengthSource,
+    execution_overrides: RequestExecutionOverrides,
+}
+
+impl<'a> RequestBuilder<'a> {
+    pub(crate) fn new(client: &'a Client, method: Method, path: String) -> Self {
+        Self {
+            client,
+            method,
+            path,
+            query_pairs: Vec::new(),
+            headers: HeaderMap::new(),
+            body: None,
+            content_length_source: ContentLengthSource::None,
+            execution_overrides: RequestExecutionOverrides::default(),
+        }
+    }
+
+    /// Adds a header to this request.
+    ///
+    /// Request sending rejects explicit `Transfer-Encoding` and malformed or
+    /// ambiguous `Content-Length`; body framing is otherwise transport-managed.
+    ///
+    /// See also `examples/request_helpers.rs`.
+    pub fn header(mut self, name: HeaderName, mut value: HeaderValue) -> Self {
+        mark_sensitive_header_value(&name, &mut value);
+        if name == CONTENT_LENGTH {
+            self.content_length_source = ContentLengthSource::User;
+        }
+        self.headers.insert(name, value);
+        self
+    }
+
+    /// Parses and adds a header to this request.
+    pub fn try_header(self, name: &str, value: &str) -> crate::Result<Self> {
+        let name = parse_header_name(name)?;
+        let value = parse_header_value(name.as_str(), value)?;
+        Ok(self.header(name, value))
+    }
+
+    /// Sets the `Idempotency-Key` header for retry-safe mutations.
+    pub fn idempotency_key(self, key: &str) -> crate::Result<Self> {
+        self.try_header(IDEMPOTENCY_KEY_HEADER, key)
+    }
+
+    /// Appends one query parameter pair.
+    pub fn query_pair(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.query_pairs.push((name.into(), value.into()));
+        self
+    }
+
+    /// Appends multiple query parameter pairs.
+    pub fn query_pairs<K, V, I>(mut self, pairs: I) -> Self
+    where
+        K: Into<String>,
+        V: Into<String>,
+        I: IntoIterator<Item = (K, V)>,
+    {
+        self.query_pairs.extend(
+            pairs
+                .into_iter()
+                .map(|(name, value)| (name.into(), value.into())),
+        );
+        self
+    }
+
+    /// Serializes and appends query parameters from `params`.
+    pub fn query<T>(mut self, params: &T) -> crate::Result<Self>
+    where
+        T: Serialize + ?Sized,
+    {
+        let encoded = serde_urlencoded::to_string(params)
+            .map_err(|source| crate::error::Error::SerializeQuery { source })?;
+        self.query_pairs.extend(
+            url::form_urlencoded::parse(encoded.as_bytes())
+                .map(|(name, value)| (name.into_owned(), value.into_owned())),
+        );
+        Ok(self)
+    }
+
+    /// Sets a fully buffered request body.
+    pub fn body(mut self, body: impl Into<Bytes>) -> Self {
+        self.clear_content_length();
+        self.body = Some(RequestBody::Buffered(body.into()));
+        self
+    }
+
+    /// Sets a streaming request body.
+    pub fn body_stream<S, E>(mut self, stream: S) -> Self
+    where
+        S: Stream<Item = Result<Bytes, E>> + Send + 'static,
+        E: StdError + Send + Sync + 'static,
+    {
+        if self.content_length_source == ContentLengthSource::RequestHelper {
+            self.clear_content_length();
+        }
+        self.body = Some(RequestBody::Streaming(stream_req_body(stream)));
+        self
+    }
+
+    /// Streams an async reader as the request body.
+    ///
+    /// See also `examples/streaming.rs`.
+    pub fn body_reader<R>(self, reader: R) -> Self
+    where
+        R: AsyncRead + Send + 'static,
+    {
+        let mut builder = self;
+        builder.clear_content_length();
+        builder.body_stream(ReaderStream::new(reader))
+    }
+
+    /// Streams an async reader as the request body and sets `Content-Length`.
+    pub fn body_reader_with_length<R>(self, reader: R, content_length: u64) -> crate::Result<Self>
+    where
+        R: AsyncRead + Send + 'static,
+    {
+        let value = HeaderValue::from_str(&content_length.to_string()).map_err(|source| {
+            crate::error::Error::InvalidHeaderValue {
+                name: CONTENT_LENGTH.as_str().to_owned(),
+                source,
+            }
+        })?;
+        let mut builder = self.body_reader(reader);
+        builder.set_helper_content_length(value);
+        Ok(builder)
+    }
+
+    fn body_bytes(mut self, body: Bytes) -> Self {
+        self.clear_content_length();
+        self.body = Some(RequestBody::Buffered(body));
+        self
+    }
+
+    fn clear_content_length(&mut self) {
+        self.headers.remove(CONTENT_LENGTH);
+        self.content_length_source = ContentLengthSource::None;
+    }
+
+    fn set_helper_content_length(&mut self, value: HeaderValue) {
+        self.headers.insert(CONTENT_LENGTH, value);
+        self.content_length_source = ContentLengthSource::RequestHelper;
+    }
+
+    /// Serializes `payload` as JSON and sets `Content-Type: application/json`.
+    ///
+    /// See also `examples/basic_json.rs`.
+    pub fn json<T>(self, payload: &T) -> crate::Result<Self>
+    where
+        T: Serialize + ?Sized,
+    {
+        let body = serde_json::to_vec(payload)
+            .map_err(|source| crate::error::Error::SerializeJson { source })?;
+        let with_body = self.body_bytes(Bytes::from(body));
+        Ok(with_body.header(CONTENT_TYPE, HeaderValue::from_static("application/json")))
+    }
+
+    /// Serializes `payload` as form data and sets the form content type.
+    pub fn form<T>(self, payload: &T) -> crate::Result<Self>
+    where
+        T: Serialize + ?Sized,
+    {
+        let encoded = serde_urlencoded::to_string(payload)
+            .map_err(|source| crate::error::Error::SerializeForm { source })?;
+        let with_body = self.body_bytes(Bytes::from(encoded));
+        Ok(with_body.header(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/x-www-form-urlencoded"),
+        ))
+    }
+
+    /// Overrides the per-attempt request timeout for this request.
+    ///
+    /// A zero duration is rejected by `send` or `send_stream`.
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.execution_overrides.request_timeout = Some(timeout);
+        self
+    }
+
+    /// Overrides the overall deadline for this request.
+    ///
+    /// A zero duration is rejected by `send` or `send_stream`.
+    pub fn total_timeout(mut self, total_timeout: Duration) -> Self {
+        self.execution_overrides.total_timeout = Some(total_timeout);
+        self
+    }
+
+    /// Overrides the buffered response body size limit for this request.
+    pub fn max_response_body_bytes(mut self, max_response_body_bytes: usize) -> Self {
+        self.execution_overrides.max_response_body_bytes = Some(max_response_body_bytes);
+        self
+    }
+
+    /// Overrides the retry policy for this request.
+    ///
+    /// See also `examples/request_overrides.rs`.
+    pub fn retry_policy(mut self, retry_policy: RetryPolicy) -> Self {
+        self.execution_overrides.retry_policy = Some(retry_policy);
+        self
+    }
+
+    /// Overrides redirect handling for this request.
+    pub fn redirect_policy(mut self, redirect_policy: RedirectPolicy) -> Self {
+        self.execution_overrides.redirect_policy = Some(redirect_policy);
+        self
+    }
+
+    /// Overrides status handling for this request.
+    pub fn status_policy(mut self, status_policy: StatusPolicy) -> Self {
+        self.execution_overrides.status_policy = Some(status_policy);
+        self
+    }
+
+    /// Overrides automatic `Accept-Encoding` injection for this request.
+    pub fn auto_accept_encoding(mut self, enabled: bool) -> Self {
+        self.execution_overrides.auto_accept_encoding = Some(enabled);
+        self
+    }
+
+    fn into_prepared_request(
+        self,
+        forced_status_policy: Option<StatusPolicy>,
+    ) -> PreparedRequest<'a, Client, RequestBody, RequestExecutionOptions> {
+        RequestPreparation {
+            client: self.client,
+            method: self.method,
+            path: self.path,
+            query_pairs: self.query_pairs,
+            headers: self.headers,
+            body: self.body,
+            execution_overrides: self.execution_overrides,
+        }
+        .prepare(forced_status_policy, RequestExecutionOptions::from)
+    }
+
+    /// Executes the request and applies the effective [`StatusPolicy`].
+    pub async fn send(self) -> crate::Result<crate::response::Response> {
+        let PreparedRequest {
+            client,
+            method,
+            path,
+            headers,
+            body,
+            execution_options,
+        } = self.into_prepared_request(None);
+        client
+            .send_request(method, path, headers, body, execution_options)
+            .await
+    }
+
+    /// Executes the request and returns a streaming response body.
+    ///
+    /// Non-success HTTP statuses still follow the effective [`StatusPolicy`].
+    /// See also `examples/streaming.rs`.
+    pub async fn send_stream(self) -> crate::Result<crate::response::ResponseStream> {
+        let PreparedRequest {
+            client,
+            method,
+            path,
+            headers,
+            body,
+            execution_options,
+        } = self.into_prepared_request(None);
+        client
+            .send_request_stream(method, path, headers, body, execution_options)
+            .await
+    }
+
+    /// Streams the response body into `writer`.
+    ///
+    /// See also `examples/streaming.rs`.
+    pub async fn download_to_writer<W>(self, writer: &mut W) -> crate::Result<u64>
+    where
+        W: AsyncWrite + Unpin + Send + ?Sized,
+    {
+        self.send_stream().await?.copy_to_writer(writer).await
+    }
+
+    /// Streams the response body into `writer`, enforcing `max_bytes`.
+    ///
+    /// See also `examples/streaming.rs`.
+    pub async fn download_to_writer_limited<W>(
+        self,
+        writer: &mut W,
+        max_bytes: usize,
+    ) -> crate::Result<u64>
+    where
+        W: AsyncWrite + Unpin + Send + ?Sized,
+    {
+        self.send_stream()
+            .await?
+            .copy_to_writer_limited(writer, max_bytes)
+            .await
+    }
+
+    /// Executes the request, buffers the body, and deserializes it as JSON.
+    pub async fn send_json<T>(self) -> crate::Result<T>
+    where
+        T: DeserializeOwned,
+    {
+        let response = self.send().await?;
+        response.json()
+    }
+
+    /// Executes the request and always returns a buffered [`crate::Response`]
+    /// for HTTP status responses.
+    pub async fn send_response(self) -> crate::Result<crate::response::Response> {
+        let PreparedRequest {
+            client,
+            method,
+            path,
+            headers,
+            body,
+            execution_options,
+        } = self.into_prepared_request(Some(StatusPolicy::Response));
+        client
+            .send_request(method, path, headers, body, execution_options)
+            .await
+    }
+
+    /// Executes the request and always returns a streaming response for
+    /// HTTP status responses.
+    pub async fn send_response_stream(self) -> crate::Result<crate::response::ResponseStream> {
+        let PreparedRequest {
+            client,
+            method,
+            path,
+            headers,
+            body,
+            execution_options,
+        } = self.into_prepared_request(Some(StatusPolicy::Response));
+        client
+            .send_request_stream(method, path, headers, body, execution_options)
+            .await
+    }
+}

@@ -1,0 +1,153 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    name: quality / ubuntu-latest / stable
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install nightly toolchain for docsrs-check
+        run: rustup toolchain install nightly --profile minimal
+
+      - name: Run CI checks
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git ls-files | grep -E '^(\\.docs|\\.cargo)/' >/dev/null; then
+            echo "error: tracked private paths detected (.docs or .cargo)"
+            exit 1
+          fi
+
+          cargo fmt --all --check
+          cargo check --all-targets
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo +nightly rustdoc --lib --all-features -- --cfg docsrs
+          cargo test --doc
+          cargo test --doc --all-features
+          cargo nextest run
+          cargo nextest run --all-features
+
+  msrv:
+    name: msrv / ubuntu-latest / 1.97.1
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.97.1 --profile minimal
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check default and complete feature sets
+        run: |
+          cargo check --all-targets
+          cargo check --lib --tests --all-features
+
+  feature-matrix:
+    name: feature-matrix / ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: async-rustls-ring
+            command: cargo nextest run --tests --no-default-features --features async-tls-rustls-ring,compression,resumable-upload
+          - name: async-rustls-aws-lc-rs
+            command: cargo nextest run --tests --no-default-features --features async-tls-rustls-aws-lc-rs,compression,resumable-upload
+          - name: async-native
+            command: cargo nextest run --tests --no-default-features --features async-tls-native,compression,resumable-upload
+          - name: blocking-rustls-ring
+            command: cargo nextest run --tests --no-default-features --features blocking-tls-rustls-ring,compression,resumable-upload
+          - name: blocking-rustls-aws-lc-rs
+            command: cargo nextest run --tests --no-default-features --features blocking-tls-rustls-aws-lc-rs,compression,resumable-upload
+          - name: blocking-native
+            command: cargo nextest run --tests --no-default-features --features blocking-tls-native,compression,resumable-upload
+          - name: hybrid-rustls-ring
+            command: cargo check --lib --tests --no-default-features --features async-tls-rustls-ring,blocking-tls-rustls-ring
+          - name: hybrid-rustls-aws-lc-rs
+            command: cargo check --lib --tests --no-default-features --features async-tls-rustls-aws-lc-rs,blocking-tls-rustls-aws-lc-rs
+          - name: hybrid-async-ring-blocking-aws-lc-rs
+            command: cargo check --lib --tests --no-default-features --features async-tls-rustls-ring,blocking-tls-rustls-aws-lc-rs
+          - name: hybrid-async-aws-lc-rs-blocking-ring
+            command: cargo check --lib --tests --no-default-features --features async-tls-rustls-aws-lc-rs,blocking-tls-rustls-ring
+          - name: async-all-tls-backends
+            command: cargo check --lib --tests --no-default-features --features async-tls-rustls-ring,async-tls-rustls-aws-lc-rs,async-tls-native
+          - name: blocking-all-tls-backends
+            command: cargo check --lib --tests --no-default-features --features blocking-tls-rustls-ring,blocking-tls-rustls-aws-lc-rs,blocking-tls-native
+          - name: all-tls-backends
+            command: cargo check --lib --tests --no-default-features --features async-tls-rustls-ring,async-tls-rustls-aws-lc-rs,async-tls-native,blocking-tls-rustls-ring,blocking-tls-rustls-aws-lc-rs,blocking-tls-native
+          - name: no-transport
+            command: cargo check --lib --no-default-features
+          - name: internal-feature-guards
+            command: |
+              async_guard_log="$(mktemp)"
+              blocking_guard_log="$(mktemp)"
+              ! cargo check --lib --no-default-features --features _async >"$async_guard_log" 2>&1
+              ! cargo check --lib --no-default-features --features _blocking >"$blocking_guard_log" 2>&1
+              grep -Fq '`_async` is internal; enable an `async-tls-*` feature instead' "$async_guard_log"
+              grep -Fq '`_blocking` is internal; enable a `blocking-tls-*` feature instead' "$blocking_guard_log"
+          - name: compression-gzip-only
+            command: cargo test --lib --no-default-features --features compression-gzip
+          - name: compression-brotli-only
+            command: cargo test --lib --no-default-features --features compression-brotli
+          - name: compression-zstd-only
+            command: cargo test --lib --no-default-features --features compression-zstd
+          - name: resumable-upload-only
+            command: cargo test --lib --no-default-features --features resumable-upload
+          - name: otel-only
+            command: cargo check --lib --no-default-features --features otel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.97.1 --profile minimal
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Run feature profile
+        run: ${{ matrix.command }}
