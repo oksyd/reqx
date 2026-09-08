@@ -1,5 +1,6 @@
 pub(crate) mod config;
 pub(crate) mod content_encoding;
+pub(crate) mod dns;
 pub(crate) mod error;
 pub(crate) mod execution;
 pub(crate) mod extensions;

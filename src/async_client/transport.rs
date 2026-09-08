@@ -39,12 +39,6 @@ use crate::error::Error;
 ))]
 use crate::error::transport_error;
 use crate::execution::RequestExecutionState;
-use crate::proxy::ProxyConfig;
-#[cfg(any(
-    feature = "async-tls-native",
-    feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
-))]
 use crate::proxy::ProxyConnector;
 #[cfg(any(
     feature = "async-tls-rustls-ring",
@@ -434,14 +428,12 @@ impl TransportRequestError {
 
 #[cfg(feature = "async-tls-rustls-ring")]
 fn build_rustls_ring_transport(
-    proxy_config: Option<ProxyConfig>,
+    connector: ProxyConnector,
     tls_options: &TlsOptions,
-    connect_timeout: Duration,
     pool_idle_timeout: Duration,
     pool_max_idle_per_host: usize,
     http2_only: bool,
 ) -> crate::Result<TransportClient> {
-    let connector = ProxyConnector::new(proxy_config, connect_timeout);
     let tls_config = build_rustls_tls_config(
         TlsBackend::RustlsRing,
         rustls::crypto::ring::default_provider(),
@@ -463,9 +455,8 @@ fn build_rustls_ring_transport(
 
 #[cfg(not(feature = "async-tls-rustls-ring"))]
 fn build_rustls_ring_transport(
-    _proxy_config: Option<ProxyConfig>,
+    _connector: ProxyConnector,
     _tls_options: &TlsOptions,
-    _connect_timeout: Duration,
     _pool_idle_timeout: Duration,
     _pool_max_idle_per_host: usize,
     _http2_only: bool,
@@ -477,14 +468,12 @@ fn build_rustls_ring_transport(
 
 #[cfg(feature = "async-tls-rustls-aws-lc-rs")]
 fn build_rustls_aws_lc_rs_transport(
-    proxy_config: Option<ProxyConfig>,
+    connector: ProxyConnector,
     tls_options: &TlsOptions,
-    connect_timeout: Duration,
     pool_idle_timeout: Duration,
     pool_max_idle_per_host: usize,
     http2_only: bool,
 ) -> crate::Result<TransportClient> {
-    let connector = ProxyConnector::new(proxy_config, connect_timeout);
     let tls_config = build_rustls_tls_config(
         TlsBackend::RustlsAwsLcRs,
         rustls::crypto::aws_lc_rs::default_provider(),
@@ -506,9 +495,8 @@ fn build_rustls_aws_lc_rs_transport(
 
 #[cfg(not(feature = "async-tls-rustls-aws-lc-rs"))]
 fn build_rustls_aws_lc_rs_transport(
-    _proxy_config: Option<ProxyConfig>,
+    _connector: ProxyConnector,
     _tls_options: &TlsOptions,
-    _connect_timeout: Duration,
     _pool_idle_timeout: Duration,
     _pool_max_idle_per_host: usize,
     _http2_only: bool,
@@ -662,14 +650,12 @@ fn build_native_tls_connector(
 
 #[cfg(feature = "async-tls-native")]
 fn build_native_tls_transport(
-    proxy_config: Option<ProxyConfig>,
+    connector: ProxyConnector,
     tls_options: &TlsOptions,
-    connect_timeout: Duration,
     pool_idle_timeout: Duration,
     pool_max_idle_per_host: usize,
     http2_only: bool,
 ) -> crate::Result<TransportClient> {
-    let connector = ProxyConnector::new(proxy_config, connect_timeout);
     let tls_connector = build_native_tls_connector(tls_options, http2_only)?;
     let https = hyper_tls::HttpsConnector::from((connector, tls_connector.into()));
     let transport = HyperClient::builder(TokioExecutor::new())
@@ -682,9 +668,8 @@ fn build_native_tls_transport(
 
 #[cfg(not(feature = "async-tls-native"))]
 fn build_native_tls_transport(
-    _proxy_config: Option<ProxyConfig>,
+    _connector: ProxyConnector,
     _tls_options: &TlsOptions,
-    _connect_timeout: Duration,
     _pool_idle_timeout: Duration,
     _pool_max_idle_per_host: usize,
     _http2_only: bool,
@@ -696,34 +681,30 @@ fn build_native_tls_transport(
 
 pub(super) fn build_transport_client(
     tls_backend: TlsBackend,
-    proxy_config: Option<ProxyConfig>,
+    connector: ProxyConnector,
     tls_options: &TlsOptions,
-    connect_timeout: Duration,
     pool_idle_timeout: Duration,
     pool_max_idle_per_host: usize,
     http2_only: bool,
 ) -> crate::Result<TransportClient> {
     match tls_backend {
         TlsBackend::RustlsRing => build_rustls_ring_transport(
-            proxy_config,
+            connector,
             tls_options,
-            connect_timeout,
             pool_idle_timeout,
             pool_max_idle_per_host,
             http2_only,
         ),
         TlsBackend::RustlsAwsLcRs => build_rustls_aws_lc_rs_transport(
-            proxy_config,
+            connector,
             tls_options,
-            connect_timeout,
             pool_idle_timeout,
             pool_max_idle_per_host,
             http2_only,
         ),
         TlsBackend::NativeTls => build_native_tls_transport(
-            proxy_config,
+            connector,
             tls_options,
-            connect_timeout,
             pool_idle_timeout,
             pool_max_idle_per_host,
             http2_only,

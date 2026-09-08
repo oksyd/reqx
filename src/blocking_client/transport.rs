@@ -369,7 +369,7 @@ fn build_sync_tls_config(
     feature = "blocking-tls-rustls-aws-lc-rs",
     feature = "blocking-tls-native"
 ))]
-pub(super) fn make_agent(
+pub(super) fn make_agent_config(
     tls_backend: TlsBackend,
     tls_options: &TlsOptions,
     client_name: &str,
@@ -377,7 +377,7 @@ pub(super) fn make_agent(
     pool_max_idle_per_host: usize,
     pool_max_idle_connections: usize,
     proxy: Option<ureq::Proxy>,
-) -> crate::Result<ureq::Agent> {
+) -> crate::Result<ureq::config::Config> {
     let tls_config = build_sync_tls_config(tls_backend, tls_options)?;
     let config = ureq::Agent::config_builder()
         .http_status_as_error(false)
@@ -391,7 +391,7 @@ pub(super) fn make_agent(
         .tls_config(tls_config)
         .proxy(proxy)
         .build();
-    Ok(config.new_agent())
+    Ok(config)
 }
 
 #[cfg(not(any(
@@ -399,7 +399,7 @@ pub(super) fn make_agent(
     feature = "blocking-tls-rustls-aws-lc-rs",
     feature = "blocking-tls-native"
 )))]
-pub(super) fn make_agent(
+pub(super) fn make_agent_config(
     tls_backend: TlsBackend,
     _tls_options: &TlsOptions,
     _client_name: &str,
@@ -407,7 +407,7 @@ pub(super) fn make_agent(
     _pool_max_idle_per_host: usize,
     _pool_max_idle_connections: usize,
     _proxy: Option<ureq::Proxy>,
-) -> crate::Result<ureq::Agent> {
+) -> crate::Result<ureq::config::Config> {
     Err(crate::error::Error::TlsBackendUnavailable {
         backend: tls_backend.as_str(),
     })

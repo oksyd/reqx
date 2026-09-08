@@ -93,6 +93,8 @@ pub enum ErrorCode {
     InvalidUri,
     /// A `no_proxy` rule could not be parsed.
     InvalidNoProxyRule,
+    /// Static DNS override configuration was invalid or incompatible with proxy routing.
+    InvalidDnsOverrideConfig,
     /// Proxy configuration was internally inconsistent.
     InvalidProxyConfig,
     /// Timeout settings were invalid.
@@ -171,6 +173,7 @@ impl ErrorCode {
     const ALL: &'static [Self] = &[
         Self::InvalidUri,
         Self::InvalidNoProxyRule,
+        Self::InvalidDnsOverrideConfig,
         Self::InvalidProxyConfig,
         Self::InvalidTimeoutConfig,
         Self::InvalidClientNameConfig,
@@ -219,6 +222,7 @@ impl ErrorCode {
         match self {
             Self::InvalidUri => "invalid_uri",
             Self::InvalidNoProxyRule => "invalid_no_proxy_rule",
+            Self::InvalidDnsOverrideConfig => "invalid_dns_override_config",
             Self::InvalidProxyConfig => "invalid_proxy_config",
             Self::InvalidTimeoutConfig => "invalid_timeout_config",
             Self::InvalidClientNameConfig => "invalid_client_name_config",
@@ -274,6 +278,12 @@ pub enum Error {
     InvalidNoProxyRule {
         /// Original invalid rule string.
         rule: String,
+    },
+    /// Static DNS overrides were invalid or combined with a proxy.
+    #[error("invalid DNS override configuration: {message}")]
+    InvalidDnsOverrideConfig {
+        /// Configuration failure explanation.
+        message: &'static str,
     },
     /// Proxy configuration was internally inconsistent.
     #[error("invalid proxy configuration for {proxy_uri}: {message}")]
@@ -668,6 +678,7 @@ impl Error {
         match self {
             Self::InvalidUri { .. } => ErrorCode::InvalidUri,
             Self::InvalidNoProxyRule { .. } => ErrorCode::InvalidNoProxyRule,
+            Self::InvalidDnsOverrideConfig { .. } => ErrorCode::InvalidDnsOverrideConfig,
             Self::InvalidProxyConfig { .. } | Self::ProxyAuthorizationRequiresHttpProxy => {
                 ErrorCode::InvalidProxyConfig
             }

@@ -242,7 +242,7 @@ where
 #[derive(Clone)]
 #[cfg(feature = "_async")]
 struct ProxyRuntime {
-    tunnel: Tunnel<HttpConnector>,
+    tunnel: Tunnel<HttpConnector<crate::core::dns::OverrideResolver>>,
     proxy_uri: Uri,
     no_proxy_rules: Vec<NoProxyRule>,
 }
@@ -337,14 +337,19 @@ where
 #[derive(Clone)]
 #[cfg(feature = "_async")]
 pub(crate) struct ProxyConnector {
-    direct: HttpConnector,
+    direct: HttpConnector<crate::core::dns::OverrideResolver>,
     proxy: Option<ProxyRuntime>,
 }
 
 #[cfg(feature = "_async")]
 impl ProxyConnector {
-    pub(crate) fn new(proxy_config: Option<ProxyConfig>, connect_timeout: Duration) -> Self {
-        let mut direct = HttpConnector::new();
+    pub(crate) fn new(
+        proxy_config: Option<ProxyConfig>,
+        connect_timeout: Duration,
+        overrides: crate::core::dns::DnsOverrides,
+    ) -> Self {
+        let mut direct =
+            HttpConnector::new_with_resolver(crate::core::dns::OverrideResolver::new(overrides));
         direct.enforce_http(false);
         direct.set_connect_timeout(Some(connect_timeout));
         let proxy = proxy_config.map(|config| {
@@ -364,7 +369,9 @@ impl ProxyConnector {
 
 #[cfg(feature = "_async")]
 impl Service<Uri> for ProxyConnector {
-    type Response = ProxyConnection<<HttpConnector as Service<Uri>>::Response>;
+    type Response = ProxyConnection<
+        <HttpConnector<crate::core::dns::OverrideResolver> as Service<Uri>>::Response,
+    >;
     type Error = BoxConnectError;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 

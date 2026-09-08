@@ -16,6 +16,7 @@ blocking clients.
 - Async and blocking clients with buffered and streaming I/O
 - Rate limiting, concurrency limits, and multi-endpoint routing
 - Rustls or native-tls, including custom CAs and mTLS
+- Fixed DNS addresses preserving Host and TLS identity
 - Proxies, redirects, response size limits, and structured errors
 - Metrics, observers, interceptors, and optional OpenTelemetry integration
 
@@ -72,6 +73,22 @@ async fn fetch_item() -> reqx::Result<()> {
 
 `POST` requests are retried only when they can be sent safely; provide an
 idempotency key when the API supports one.
+
+## Fixed DNS addresses
+
+Async and blocking clients support `resolve` and `resolve_to_addrs`, preserving
+Host and TLS identity without falling back to DNS for configured hostnames:
+
+```rust
+let client = Client::builder("https://example.com")
+    .resolve_to_addrs("example.com", &validated_addresses)
+    .build()?;
+```
+
+Accepts 1–16 addresses per hostname; incompatible with proxies. Callers validate
+addresses and each redirect destination. See the
+[API reference](https://docs.rs/reqx/latest/reqx/struct.ClientBuilder.html#method.resolve_to_addrs)
+for details.
 
 ## Documentation
 

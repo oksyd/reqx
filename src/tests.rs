@@ -1569,7 +1569,7 @@ fn blocking_timeout_io_error_helper_detects_plain_and_wrapped_timeouts() {
 #[test]
 fn error_code_contract_table_is_stable() {
     let codes = ErrorCode::all();
-    assert_eq!(codes.len(), 38);
+    assert_eq!(codes.len(), 39);
 
     let names: Vec<&str> = codes.iter().map(|code| code.as_str()).collect();
     assert_eq!(
@@ -1577,6 +1577,7 @@ fn error_code_contract_table_is_stable() {
         vec![
             "invalid_uri",
             "invalid_no_proxy_rule",
+            "invalid_dns_override_config",
             "invalid_proxy_config",
             "invalid_timeout_config",
             "invalid_client_name_config",

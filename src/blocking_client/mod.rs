@@ -185,6 +185,7 @@ pub struct ClientBuilder {
     pool_max_idle_per_host: usize,
     pool_max_idle_connections: usize,
     http_proxy: Option<Uri>,
+    dns_overrides: crate::core::dns::DnsOverridesBuilder,
     proxy_authorization: Option<http::HeaderValue>,
     no_proxy_rules: Vec<NoProxyRule>,
     invalid_no_proxy_rules: Vec<String>,

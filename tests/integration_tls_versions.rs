@@ -64,6 +64,10 @@ fn rustls_protocol_versions(
 }
 
 fn test_tls_material() -> TestTlsMaterial {
+    test_tls_material_for_names(vec!["localhost".to_owned(), "127.0.0.1".to_owned()])
+}
+
+fn test_tls_material_for_names(names: Vec<String>) -> TestTlsMaterial {
     let mut ca_params =
         CertificateParams::new(Vec::<String>::new()).expect("build test CA certificate parameters");
     ca_params.distinguished_name = DistinguishedName::new();
@@ -85,8 +89,7 @@ fn test_tls_material() -> TestTlsMaterial {
     let ca_issuer = Issuer::new(ca_params, ca_key);
 
     let mut server_params =
-        CertificateParams::new(vec!["localhost".to_owned(), "127.0.0.1".to_owned()])
-            .expect("build test server certificate parameters");
+        CertificateParams::new(names).expect("build test server certificate parameters");
     server_params.distinguished_name = DistinguishedName::new();
     server_params
         .distinguished_name
@@ -313,5 +316,160 @@ async fn native_tls_negotiates_http_protocol_with_alpn() {
             Some(protocol),
             "http2_only={http2_only}"
         );
+    }
+}
+
+async fn start_dns_identity_server(
+    material: &TestTlsMaterial,
+) -> (std::net::SocketAddr, JoinHandle<Option<(String, String)>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(
+        &[TlsVersion::V1_2, TlsVersion::V1_3],
+        material,
+    )));
+    let server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(4), async move {
+            let (socket, _) = listener.accept().await.expect("connection");
+            let Ok(mut tls) = acceptor.accept(socket).await else {
+                return None;
+            };
+            let name = tls.get_ref().1.server_name().unwrap_or_default().to_owned();
+            let mut header = Vec::new();
+            while !header.ends_with(b"\r\n\r\n") {
+                match tls.read_u8().await {
+                    Ok(byte) => header.push(byte),
+                    Err(_) => return None,
+                }
+                assert!(header.len() < 8192);
+            }
+            tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .expect("response");
+            let _ = tls.shutdown().await;
+            Some((name, String::from_utf8(header).expect("header")))
+        })
+        .await
+        .expect("TLS server deadline")
+    });
+    (address, server)
+}
+
+#[tokio::test]
+async fn dns_overrides_preserve_async_tls_identity() {
+    let mut backends = Vec::new();
+    #[cfg(feature = "async-tls-rustls-ring")]
+    backends.push(TlsBackend::RustlsRing);
+    #[cfg(feature = "async-tls-rustls-aws-lc-rs")]
+    backends.push(TlsBackend::RustlsAwsLcRs);
+    #[cfg(feature = "async-tls-native")]
+    backends.push(TlsBackend::NativeTls);
+    for backend in backends {
+        for valid in [true, false] {
+            let material = test_tls_material_for_names(vec![
+                if valid {
+                    "pinned.invalid"
+                } else {
+                    "wrong.invalid"
+                }
+                .to_owned(),
+            ]);
+            let (address, server) = start_dns_identity_server(&material).await;
+            let client = Client::builder("https://pinned.invalid")
+                .tls_backend(backend)
+                .tls_root_store(TlsRootStore::Specific)
+                .tls_root_ca_pem(material.ca_cert_pem.as_str())
+                .resolve("pinned.invalid", address)
+                .request_timeout(Duration::from_secs(2))
+                .retry_policy(RetryPolicy::disabled())
+                .build()
+                .expect("client");
+            let response = client.get("/identity").send().await;
+            let observed = server.await.expect("server");
+            if valid {
+                assert!(response.is_ok(), "{backend:?}: {response:?}");
+                let (sni, header) = observed.expect("TLS accepted");
+                assert_eq!(sni, "pinned.invalid");
+                assert!(
+                    header
+                        .to_ascii_lowercase()
+                        .contains("host: pinned.invalid\r\n")
+                );
+                assert!(header.starts_with("GET /identity "));
+            } else {
+                assert!(
+                    matches!(
+                        response,
+                        Err(Error::Transport {
+                            kind: TransportErrorKind::Tls,
+                            ..
+                        })
+                    ),
+                    "{backend:?}: {response:?}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(feature = "_blocking")]
+#[tokio::test]
+async fn dns_overrides_preserve_blocking_tls_identity() {
+    let mut backends = Vec::new();
+    #[cfg(feature = "blocking-tls-rustls-ring")]
+    backends.push(TlsBackend::RustlsRing);
+    #[cfg(feature = "blocking-tls-rustls-aws-lc-rs")]
+    backends.push(TlsBackend::RustlsAwsLcRs);
+    #[cfg(feature = "blocking-tls-native")]
+    backends.push(TlsBackend::NativeTls);
+    for backend in backends {
+        for valid in [true, false] {
+            let material = test_tls_material_for_names(vec![
+                if valid {
+                    "pinned.invalid"
+                } else {
+                    "wrong.invalid"
+                }
+                .to_owned(),
+            ]);
+            let (address, server) = start_dns_identity_server(&material).await;
+            let response = tokio::task::spawn_blocking(move || {
+                let client = reqx::blocking::Client::builder("https://pinned.invalid")
+                    .tls_backend(backend)
+                    .tls_root_store(TlsRootStore::Specific)
+                    .tls_root_ca_pem(material.ca_cert_pem.as_str())
+                    .resolve("pinned.invalid", address)
+                    .request_timeout(Duration::from_secs(2))
+                    .retry_policy(RetryPolicy::disabled())
+                    .build()
+                    .expect("client");
+                client.get("/identity").send()
+            })
+            .await
+            .expect("blocking request");
+            let observed = server.await.expect("server");
+            if valid {
+                assert!(response.is_ok(), "{backend:?}: {response:?}");
+                let (sni, header) = observed.expect("TLS accepted");
+                assert_eq!(sni, "pinned.invalid");
+                assert!(
+                    header
+                        .to_ascii_lowercase()
+                        .contains("host: pinned.invalid\r\n")
+                );
+            } else {
+                assert!(observed.is_none(), "certificate mismatch must prevent HTTP");
+                assert!(
+                    matches!(
+                        response,
+                        Err(Error::Transport {
+                            kind: TransportErrorKind::Tls | TransportErrorKind::Other,
+                            ..
+                        })
+                    ),
+                    "{backend:?}: {response:?}"
+                );
+            }
+        }
     }
 }

@@ -35,7 +35,9 @@ use crate::util::{
     validate_base_url, validate_http_proxy_uri,
 };
 
-use super::transport::{TransportAgents, backend_is_available, default_tls_backend, make_agent};
+use super::transport::{
+    TransportAgents, backend_is_available, default_tls_backend, make_agent_config,
+};
 use super::{
     AdaptiveConcurrencyController, Client, ClientBuilder, DEFAULT_CLIENT_NAME,
     DEFAULT_CONNECT_TIMEOUT, DEFAULT_MAX_RESPONSE_BODY_BYTES, DEFAULT_POOL_IDLE_TIMEOUT,
@@ -59,6 +61,7 @@ impl ClientBuilder {
             pool_max_idle_per_host: DEFAULT_POOL_MAX_IDLE_PER_HOST,
             pool_max_idle_connections: DEFAULT_POOL_MAX_IDLE_CONNECTIONS,
             http_proxy: None,
+            dns_overrides: crate::core::dns::DnsOverridesBuilder::default(),
             proxy_authorization: None,
             no_proxy_rules: Vec::new(),
             invalid_no_proxy_rules: Vec::new(),
@@ -152,6 +155,50 @@ impl ClientBuilder {
     /// Zero disables global idle connection retention.
     pub fn pool_max_idle_connections(mut self, pool_max_idle_connections: usize) -> Self {
         self.pool_max_idle_connections = pool_max_idle_connections;
+        self
+    }
+
+    /// Overrides DNS for one hostname with a single socket address.
+    ///
+    /// See [`Self::resolve_to_addrs`] for validation, ports, redirects and proxy limitations.
+    pub fn resolve(self, domain: &str, address: std::net::SocketAddr) -> Self {
+        self.resolve_to_addrs(domain, &[address])
+    }
+
+    /// Overrides DNS for a hostname with 1 to 16 IPv4 and/or IPv6 socket addresses.
+    ///
+    /// Only these addresses may be used for the hostname, including retries and
+    /// new connections. Connection failures never fall back to system DNS.
+    /// Unconfigured hostnames retain the default resolver behavior.
+    ///
+    /// The URL, default Host/HTTP authority, TLS SNI and certificate identity
+    /// retain the original hostname. Explicit URL ports override address ports;
+    /// otherwise a nonzero address port is used, or 80/443 when it is zero.
+    /// Address selection order is not guaranteed.
+    ///
+    /// Hostnames match exactly after IDNA conversion, ASCII case folding and
+    /// removal of one trailing dot. URLs, IP literals and wildcards are invalid
+    /// keys. A later valid entry replaces an earlier entry for the same hostname.
+    /// Invalid entries cause [`Self::build`] to fail, even if later replaced.
+    /// Empty or overlong lists and combining overrides with `http_proxy` (even
+    /// with `no_proxy`) return [`crate::Error::InvalidDnsOverrideConfig`] at build time.
+    ///
+    /// Overrides are immutable for the lifetime of the client and its clones.
+    /// Redirect policy is unchanged: each redirect uses its destination hostname's
+    /// configuration. For untrusted URLs, disable automatic redirects and validate
+    /// every new destination. Address access policy belongs to the caller.
+    ///
+    /// ```
+    /// # fn pinned(validated: &[std::net::SocketAddr]) -> reqx::Result<()> {
+    /// let client = reqx::blocking::Client::builder("https://example.com")
+    ///     .resolve_to_addrs("example.com", validated)
+    ///     .redirect_policy(reqx::prelude::RedirectPolicy::none())
+    ///     .build()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn resolve_to_addrs(mut self, domain: &str, addresses: &[std::net::SocketAddr]) -> Self {
+        self.dns_overrides.insert(domain, addresses);
         self
     }
 
@@ -591,6 +638,7 @@ impl ClientBuilder {
     /// unsupported backend-specific combinations return [`crate::Error::TlsConfig`].
     pub fn build(self) -> crate::Result<Client> {
         validate_base_url(&self.base_url)?;
+        let dns_overrides = self.dns_overrides.build(self.http_proxy.is_some())?;
         if let Some(proxy_uri) = self.http_proxy.as_ref() {
             validate_http_proxy_uri(proxy_uri)?;
         }
@@ -648,7 +696,7 @@ impl ClientBuilder {
             no_proxy_rules: self.no_proxy_rules,
         });
 
-        let direct = make_agent(
+        let direct_config = make_agent_config(
             self.tls_backend,
             &self.tls_options,
             &self.client_name,
@@ -658,6 +706,7 @@ impl ClientBuilder {
             None,
         )?;
 
+        let direct = dns_overrides.into_agent(direct_config);
         let proxied = if let Some(proxy_config) = &proxy_config {
             let proxy = ureq::Proxy::new(&proxy_config.uri.to_string()).map_err(|_| {
                 Error::InvalidProxyConfig {
@@ -666,15 +715,18 @@ impl ClientBuilder {
                 }
             })?;
 
-            Some(make_agent(
-                self.tls_backend,
-                &self.tls_options,
-                &self.client_name,
-                self.pool_idle_timeout,
-                self.pool_max_idle_per_host,
-                self.pool_max_idle_connections,
-                Some(proxy),
-            )?)
+            Some(
+                make_agent_config(
+                    self.tls_backend,
+                    &self.tls_options,
+                    &self.client_name,
+                    self.pool_idle_timeout,
+                    self.pool_max_idle_per_host,
+                    self.pool_max_idle_connections,
+                    Some(proxy),
+                )?
+                .new_agent(),
+            )
         } else {
             None
         };

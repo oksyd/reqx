@@ -401,6 +401,7 @@ impl ClientMetrics {
             }
             Error::InvalidUri { .. }
             | Error::InvalidNoProxyRule { .. }
+            | Error::InvalidDnsOverrideConfig { .. }
             | Error::InvalidProxyConfig { .. }
             | Error::ProxyAuthorizationRequiresHttpProxy
             | Error::InvalidTimeoutConfig { .. }
