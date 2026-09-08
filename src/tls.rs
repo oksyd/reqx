@@ -178,17 +178,6 @@ impl TlsVersionBounds {
     }
 }
 
-#[cfg(all(feature = "_async", feature = "async-tls-native"))]
-impl TlsOptions {
-    pub(crate) fn has_customizations(&self) -> bool {
-        self.root_store != TlsRootStore::BackendDefault
-            || !self.root_certificates.is_empty()
-            || self.client_identity.is_some()
-            || self.min_protocol_version.is_some()
-            || self.max_protocol_version.is_some()
-    }
-}
-
 #[cfg(any(
     all(test, feature = "_async"),
     feature = "async-tls-native",

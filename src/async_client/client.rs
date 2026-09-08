@@ -706,12 +706,10 @@ impl Client {
         let redacted_uri_text = request_input.redacted_uri_text.clone();
         let method = request_input.method.clone();
         let total_timeout = request_input.execution_options.total_timeout;
-        let otel_span = self
-            .metrics
-            .start_otel_request_span(&method, &redacted_uri_text, false);
-        self.metrics.record_request_started();
-        let _in_flight = self.metrics.enter_in_flight();
         let request_started_at = Instant::now();
+        let completion =
+            self.metrics
+                .pending_request(&method, &redacted_uri_text, false, request_started_at);
         let _global_permit = match self
             .acquire_global_request_permit(
                 total_timeout,
@@ -723,10 +721,7 @@ impl Client {
         {
             Ok(permit) => permit,
             Err(error) => {
-                self.metrics
-                    .record_request_completed_error(&error, request_started_at.elapsed());
-                self.metrics
-                    .finish_otel_request_span_error(otel_span, &error);
+                completion.complete_error(&error);
                 return Err(error);
             }
         };
@@ -734,15 +729,9 @@ impl Client {
         let result = self
             .send_request_with_retry(request_input, request_started_at)
             .await;
-        self.metrics
-            .record_request_completed(&result, request_started_at.elapsed());
         match &result {
-            Ok(response) => self
-                .metrics
-                .finish_otel_request_span_success(otel_span, response.status().as_u16()),
-            Err(error) => self
-                .metrics
-                .finish_otel_request_span_error(otel_span, error),
+            Ok(response) => completion.complete_success(response.status().as_u16()),
+            Err(error) => completion.complete_error(error),
         }
         result
     }
@@ -781,14 +770,10 @@ impl Client {
         let redacted_uri_text = request_input.redacted_uri_text.clone();
         let method = request_input.method.clone();
         let total_timeout = request_input.execution_options.total_timeout;
-        let mut otel_span = Some(self.metrics.start_otel_request_span(
-            &method,
-            &redacted_uri_text,
-            true,
-        ));
-        self.metrics.record_request_started();
-        let in_flight = self.metrics.enter_in_flight();
         let request_started_at = Instant::now();
+        let completion =
+            self.metrics
+                .pending_request(&method, &redacted_uri_text, true, request_started_at);
         let global_permit = match self
             .acquire_global_request_permit(
                 total_timeout,
@@ -800,12 +785,7 @@ impl Client {
         {
             Ok(permit) => permit,
             Err(error) => {
-                self.metrics
-                    .record_request_completed_error(&error, request_started_at.elapsed());
-                if let Some(otel_span) = otel_span.take() {
-                    self.metrics
-                        .finish_otel_request_span_error(otel_span, &error);
-                }
+                completion.complete_error(&error);
                 return Err(error);
             }
         };
@@ -823,12 +803,7 @@ impl Client {
         {
             Ok(RetryResponse::Stream(response)) => {
                 let mut response = *response;
-                let completion = self.metrics.stream_completion(
-                    otel_span.take(),
-                    request_started_at,
-                    response.status().as_u16(),
-                    in_flight,
-                );
+                let completion = completion.into_stream(response.status().as_u16());
                 response.attach_completion(completion);
                 Ok(response)
             }
@@ -838,21 +813,11 @@ impl Client {
                     &expected_redacted_uri,
                     "stream",
                 );
-                self.metrics
-                    .record_request_completed_error(&error, request_started_at.elapsed());
-                if let Some(otel_span) = otel_span.take() {
-                    self.metrics
-                        .finish_otel_request_span_error(otel_span, &error);
-                }
+                completion.complete_error(&error);
                 Err(error)
             }
             Err(error) => {
-                self.metrics
-                    .record_request_completed_error(&error, request_started_at.elapsed());
-                if let Some(otel_span) = otel_span.take() {
-                    self.metrics
-                        .finish_otel_request_span_error(otel_span, &error);
-                }
+                completion.complete_error(&error);
                 Err(error)
             }
         }

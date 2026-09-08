@@ -50,7 +50,7 @@ pub(crate) struct ResponseStreamContext {
 }
 
 struct StreamBody {
-    inner: Incoming,
+    inner: Option<Incoming>,
     method: http::Method,
     uri_redacted: String,
     timeout_ms: u128,
@@ -79,7 +79,7 @@ impl StreamBody {
             permits,
         } = context;
         Self {
-            inner,
+            inner: Some(inner),
             method,
             uri_redacted,
             timeout_ms: timeout_ms.max(1),
@@ -178,13 +178,19 @@ impl StreamBody {
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Bytes, Error>>> {
         loop {
+            if self.inner.is_none() {
+                return Poll::Ready(None);
+            }
             if let Err(error) = self.ensure_within_deadline() {
                 self.frame_timeout = None;
                 self.frame_timeout_deadline_limited = false;
                 return Poll::Ready(Some(Err(error)));
             }
 
-            match Pin::new(&mut self.inner).poll_frame(cx) {
+            let Some(inner) = self.inner.as_mut() else {
+                return Poll::Ready(None);
+            };
+            match Pin::new(inner).poll_frame(cx) {
                 Poll::Ready(Some(Ok(frame))) => {
                     self.frame_timeout = None;
                     self.frame_timeout_deadline_limited = false;
@@ -375,11 +381,23 @@ impl StreamBody {
         Ok(copied)
     }
 
+    fn release_transport(&mut self) {
+        // Stop reads before releasing capacity, including after terminal errors.
+        self.inner = None;
+        self.read_buffer = Bytes::new();
+        self.frame_timeout = None;
+        self.frame_timeout_deadline_limited = false;
+        self._global_permit = None;
+        self._host_permit = None;
+    }
+
     fn complete_success(&mut self) {
+        self.release_transport();
         super::complete_success(&mut self.lifecycle);
     }
 
     fn complete_error(&mut self, error: &Error) {
+        self.release_transport();
         super::complete_error(&mut self.lifecycle, error);
     }
 }

@@ -273,6 +273,9 @@ impl ResumableUploadOptions {
         if self.part_size == 0 {
             return Err(self.invalid_options("part_size must be greater than zero"));
         }
+        if self.part_size > isize::MAX as usize {
+            return Err(self.invalid_options("part_size must not exceed isize::MAX"));
+        }
         if self.max_attempts == 0 {
             return Err(self.invalid_options("max_attempts must be greater than zero"));
         }

@@ -1542,3 +1542,29 @@ async fn async_abort_failure_preserves_original_error_and_checkpoint() {
     }
     assert_eq!(backend.aborts.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn blocking_upload_rejects_unrepresentable_part_size_before_creating_session() {
+    let backend = BlockingMockBackend::default();
+    let uploader =
+        BlockingResumableUploader::new(ResumableUploadOptions::new().with_part_size(usize::MAX));
+    let error = uploader
+        .upload(&backend, &mut std::io::empty())
+        .expect_err("invalid part size must return an error");
+    assert!(matches!(error, ResumableUploadError::InvalidOptions { .. }));
+    assert_eq!(backend.create_calls.load(Ordering::SeqCst), 0);
+}
+
+#[cfg(feature = "_async")]
+#[tokio::test]
+async fn async_upload_rejects_unrepresentable_part_size_before_creating_session() {
+    let backend = AsyncMockBackend::default();
+    let uploader =
+        AsyncResumableUploader::new(ResumableUploadOptions::new().with_part_size(usize::MAX));
+    let error = uploader
+        .upload(&backend, &mut tokio::io::empty())
+        .await
+        .expect_err("invalid part size must return an error");
+    assert!(matches!(error, ResumableUploadError::InvalidOptions { .. }));
+    assert_eq!(backend.create_calls.load(Ordering::SeqCst), 0);
+}

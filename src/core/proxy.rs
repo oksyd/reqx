@@ -133,8 +133,17 @@ impl NoProxyRule {
             {
                 return None;
             }
-            candidate = host.to_owned();
-            port = url.port_or_known_default();
+            let host = host
+                .strip_prefix("*.")
+                .unwrap_or_else(|| host.trim_start_matches('.'));
+            let host = normalize_no_proxy_host(host)?;
+            if !plain_no_proxy_host_is_valid(&host) {
+                return None;
+            }
+            return Some(Self::Domain {
+                host,
+                port: url.port_or_known_default(),
+            });
         } else if looks_like_url_rule(&candidate) {
             return None;
         }
@@ -458,4 +467,46 @@ pub(crate) fn normalize_tunnel_target_uri(dst: Uri) -> Uri {
     let mut parts = dst.into_parts();
     parts.authority = Some(authority);
     Uri::from_parts(parts).unwrap_or(original)
+}
+
+#[cfg(test)]
+mod rule_tests {
+    use super::{NoProxyRule, should_bypass_proxy_uri};
+
+    #[test]
+    fn no_proxy_url_rules_preserve_domain_suffix_matching() {
+        for text in ["http://example.com:8080", "http://*.example.com:8080"] {
+            let rule = NoProxyRule::parse(text).expect("domain URL rule");
+            assert!(rule.matches("example.com", Some(8080)), "{text}");
+            assert!(rule.matches("api.example.com", Some(8080)), "{text}");
+            assert!(!rule.matches("example.com", Some(9090)), "{text}");
+            assert!(!rule.matches("otherexample.com", Some(8080)), "{text}");
+        }
+        for text in [
+            "http://*",
+            "http://api.*.example.com",
+            "http://**.example.com",
+        ] {
+            assert!(NoProxyRule::parse(text).is_none(), "{text}");
+        }
+    }
+
+    #[test]
+    fn ipv6_url_rules_preserve_explicit_and_default_ports() {
+        for (text, port) in [
+            ("http://[::1]:8080", 8080),
+            ("http://[::1]", 80),
+            ("https://[::1]", 443),
+            ("[::1]:8080", 8080),
+        ] {
+            let rules = [NoProxyRule::parse(text).expect("valid rule")];
+            let matching = format!("http://[::1]:{port}/").parse().expect("URI");
+            assert!(should_bypass_proxy_uri(&rules, &matching), "{text}");
+            let other = "http://[::1]:9090/".parse().expect("URI");
+            assert!(!should_bypass_proxy_uri(&rules, &other), "{text}");
+        }
+        let rule = NoProxyRule::parse("[::1]").expect("bare IPv6 rule");
+        assert!(rule.matches("[::1]", Some(8080)));
+        assert!(rule.matches("[::1]", Some(9090)));
+    }
 }

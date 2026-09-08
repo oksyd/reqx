@@ -67,7 +67,7 @@ const DEFAULT_MAX_RESPONSE_BODY_BYTES: usize = 8 * 1024 * 1024;
 ///
 /// ```no_run
 /// # #[cfg(feature = "_async")]
-/// # async fn demo() -> reqx::Result<()> {
+/// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
 /// use std::time::Duration;
 ///
 /// use reqx::advanced::RateLimitPolicy;
@@ -78,7 +78,7 @@ const DEFAULT_MAX_RESPONSE_BODY_BYTES: usize = 8 * 1024 * 1024;
 ///     .request_timeout(Duration::from_secs(3))
 ///     .total_timeout(Duration::from_secs(10))
 ///     .retry_policy(RetryPolicy::standard())
-///     .http_proxy("http://proxy.internal:8080".parse().unwrap())
+///     .http_proxy("http://proxy.internal:8080".parse()?)
 ///     .tls_max_version(TlsVersion::V1_2)
 ///     .global_rate_limit_policy(RateLimitPolicy::standard())
 ///     .build()?;
@@ -748,6 +748,20 @@ impl ClientBuilder {
         }
         .validate()?;
 
+        if self
+            .max_in_flight
+            .is_some_and(|limit| limit > tokio::sync::Semaphore::MAX_PERMITS)
+            || self
+                .max_in_flight_per_host
+                .is_some_and(|limit| limit > tokio::sync::Semaphore::MAX_PERMITS)
+        {
+            return Err(Error::InvalidConcurrencyLimitConfig {
+                max_in_flight: self.max_in_flight,
+                max_in_flight_per_host: self.max_in_flight_per_host,
+                message: "concurrency limits must not exceed tokio::sync::Semaphore::MAX_PERMITS",
+            });
+        }
+
         let otel = if self.otel_enabled {
             OtelTelemetry::try_enabled_with_path_normalizer(
                 self.client_name.clone(),
@@ -844,5 +858,31 @@ mod tests {
         assert!(debug.contains("Sensitive"));
         assert!(!debug.contains("secret-token"));
         assert!(!debug.contains("secret-cookie"));
+    }
+
+    #[test]
+    fn concurrency_limits_reject_values_above_semaphore_capacity() {
+        let max = tokio::sync::Semaphore::MAX_PERMITS;
+        for limit in [max + 1, usize::MAX] {
+            for per_host in [false, true] {
+                let builder = super::ClientBuilder::new("http://localhost");
+                let builder = if per_host {
+                    builder.max_in_flight_per_host(limit)
+                } else {
+                    builder.max_in_flight(limit)
+                };
+                assert!(matches!(
+                    builder.build(),
+                    Err(crate::Error::InvalidConcurrencyLimitConfig { .. })
+                ));
+            }
+        }
+        assert!(
+            super::ClientBuilder::new("http://localhost")
+                .max_in_flight(max)
+                .max_in_flight_per_host(max)
+                .build()
+                .is_ok()
+        );
     }
 }

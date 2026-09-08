@@ -306,6 +306,11 @@ impl TokenBucket {
         self.tokens = (self.tokens - 1.0).max(0.0);
     }
 
+    fn is_idle(&self, now: Instant) -> bool {
+        self.tokens >= self.policy.configured_burst() as f64
+            && self.throttle_until.is_none_or(|until| now >= until)
+    }
+
     fn apply_throttle(&mut self, now: Instant, delay: Duration) {
         let capped_delay = delay.min(self.policy.configured_max_throttle_delay());
         if capped_delay.is_zero() {
@@ -527,13 +532,18 @@ fn cleanup_stale_per_host_rate_limits(
     entries: &mut BTreeMap<String, PerHostRateLimitEntry>,
     now: Instant,
 ) {
+    // A replacement bucket starts full and unthrottled. Only evict entries
+    // whose replacement would preserve the rate and server-throttle limits.
     entries.retain(|_, entry| {
-        now.saturating_duration_since(entry.last_used_at) <= PER_HOST_RATE_LIMIT_ENTRY_TTL
+        entry.bucket.refill(now);
+        !entry.bucket.is_idle(now)
+            || now.saturating_duration_since(entry.last_used_at) <= PER_HOST_RATE_LIMIT_ENTRY_TTL
     });
 
     while entries.len() > PER_HOST_RATE_LIMIT_MAX_ENTRIES {
         let oldest_key = entries
             .iter()
+            .filter(|(_, entry)| entry.bucket.is_idle(now))
             .min_by_key(|(_, entry)| entry.last_used_at)
             .map(|(host, _)| host.clone());
         let Some(oldest_key) = oldest_key else {
@@ -987,6 +997,72 @@ mod tests {
 
         let host_wait = limiter.acquire_delay(Some("api.example.com"));
         assert!(host_wait <= Duration::from_millis(20));
+    }
+
+    #[test]
+    fn cleanup_preserves_unreplenished_tokens_and_active_throttles() {
+        for throttled in [false, true] {
+            let clock = Arc::new(TestClock::default());
+            let limiter = RateLimiter::new(
+                None,
+                Some(
+                    RateLimitPolicy::standard()
+                        .requests_per_second(if throttled { 1.0 } else { 0.001 })
+                        .burst(1)
+                        .max_throttle_delay(Duration::from_secs(1000)),
+                ),
+                clock.clone(),
+            )
+            .expect("limiter");
+            assert!(limiter.acquire_delay(Some("limited.example.com")).is_zero());
+            if throttled {
+                limiter.observe_server_throttle(
+                    Some("limited.example.com"),
+                    Duration::from_secs(1000),
+                    ServerThrottleScope::Host,
+                    None,
+                );
+            }
+            clock.advance(super::PER_HOST_RATE_LIMIT_ENTRY_TTL + Duration::from_secs(1));
+            assert!(
+                limiter.acquire_delay(Some("limited.example.com")) > Duration::from_secs(690),
+                "TTL cleanup must preserve remaining limits, throttled={throttled}"
+            );
+        }
+    }
+
+    #[test]
+    fn capacity_cleanup_preserves_depleted_buckets_until_they_refill() {
+        let clock = Arc::new(TestClock::default());
+        let limiter = RateLimiter::new(
+            None,
+            Some(
+                RateLimitPolicy::standard()
+                    .requests_per_second(1.0)
+                    .burst(1),
+            ),
+            clock.clone(),
+        )
+        .expect("limiter");
+        for index in 0..=super::PER_HOST_RATE_LIMIT_MAX_ENTRIES {
+            assert!(
+                limiter
+                    .acquire_delay(Some(&format!("host-{index:04}.example.com")))
+                    .is_zero()
+            );
+        }
+        assert_eq!(
+            limiter.acquire_delay(Some("host-0000.example.com")),
+            Duration::from_secs(1),
+            "capacity cleanup must not grant a fresh burst"
+        );
+        clock.advance(Duration::from_secs(1));
+        assert!(limiter.acquire_delay(Some("new.example.com")).is_zero());
+        let entries = limiter.per_host.lock().expect("entries");
+        assert!(
+            !entries.contains_key("host-0000.example.com"),
+            "refilled idle buckets can be evicted"
+        );
     }
 
     #[test]

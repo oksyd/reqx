@@ -268,3 +268,50 @@ async fn rustls_tls_version_constraints_restrict_handshake_versions() {
     }
     assert!(!failure_server.await.expect("join failure server"));
 }
+
+#[cfg(feature = "async-tls-native")]
+#[tokio::test]
+async fn native_tls_negotiates_http_protocol_with_alpn() {
+    let tls_material = test_tls_material();
+    for (http2_only, protocol) in [
+        (true, b"h2".as_slice()),
+        (false, b"h2"),
+        (false, b"http/1.1"),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let base_url = format!(
+            "https://localhost:{}",
+            listener.local_addr().expect("address").port()
+        );
+        let mut config = server_config(&[TlsVersion::V1_2], &tls_material);
+        config.alpn_protocols = vec![protocol.to_vec()];
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("connection");
+            let tls = TlsAcceptor::from(Arc::new(config))
+                .accept(socket)
+                .await
+                .expect("TLS handshake");
+            tls.get_ref().1.alpn_protocol().map(<[u8]>::to_vec)
+        });
+        let client = Client::builder(&base_url)
+            .tls_backend(TlsBackend::NativeTls)
+            .tls_root_store(TlsRootStore::Specific)
+            .tls_root_ca_pem(tls_material.ca_cert_pem.as_str())
+            .http2_only(http2_only)
+            .request_timeout(Duration::from_secs(2))
+            .retry_policy(RetryPolicy::disabled())
+            .build()
+            .expect("native client");
+        // The server closes after the handshake; only protocol negotiation is under test.
+        let _ = client.get("/").send().await;
+        let negotiated = tokio::time::timeout(Duration::from_secs(3), server)
+            .await
+            .expect("handshake completed")
+            .expect("server task");
+        assert_eq!(
+            negotiated.as_deref(),
+            Some(protocol),
+            "http2_only={http2_only}"
+        );
+    }
+}

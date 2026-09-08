@@ -42,7 +42,8 @@ pub(crate) struct HostRequestPermit {
 
 impl PerHostLimiterEntryState for PerHostLimiterEntry {
     fn is_idle(&self) -> bool {
-        self.semaphore.available_permits() == self.limit
+        // Waiters may own a handle before they register with the semaphore.
+        Arc::strong_count(&self.semaphore) == 1 && self.semaphore.available_permits() == self.limit
     }
 
     fn last_used_at(&self) -> Instant {
@@ -213,6 +214,7 @@ mod tests {
         assert!(entries.contains_key("active.example.com"));
 
         drop(permit);
+        drop(semaphore);
         cleanup_stale_per_host_limiters(
             &mut entries,
             now,
@@ -220,6 +222,48 @@ mod tests {
             PER_HOST_LIMITER_MAX_ENTRIES,
         );
         assert!(!entries.contains_key("active.example.com"));
+    }
+
+    #[test]
+    fn cleanup_keeps_entry_referenced_by_a_pending_acquisition() {
+        let now = Instant::now();
+        let stale = now
+            .checked_sub(PER_HOST_LIMITER_ENTRY_TTL + Duration::from_secs(1))
+            .expect("stale instant");
+        for (last_used_at, max_entries) in [(stale, PER_HOST_LIMITER_MAX_ENTRIES), (now, 0)] {
+            // A waiter cloned this handle under the map lock. The previous
+            // permit was released before the waiter could acquire it.
+            let waiting = Arc::new(Semaphore::new(1));
+            let mut entries = BTreeMap::from([(
+                "waiting.example.com".to_owned(),
+                PerHostLimiterEntry {
+                    semaphore: Arc::clone(&waiting),
+                    limit: 1,
+                    last_used_at,
+                },
+            )]);
+            cleanup_stale_per_host_limiters(
+                &mut entries,
+                now,
+                PER_HOST_LIMITER_ENTRY_TTL,
+                max_entries,
+            );
+            assert!(
+                entries.contains_key("waiting.example.com"),
+                "must not replace a waiter's limiter"
+            );
+            drop(waiting);
+            cleanup_stale_per_host_limiters(
+                &mut entries,
+                now,
+                PER_HOST_LIMITER_ENTRY_TTL,
+                max_entries,
+            );
+            assert!(
+                entries.is_empty(),
+                "unreferenced idle limiter can be evicted"
+            );
+        }
     }
 
     #[test]

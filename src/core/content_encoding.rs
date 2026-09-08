@@ -143,7 +143,7 @@ pub(crate) fn decode_content_encoded_body_limited(
             }
             #[cfg(feature = "compression-gzip")]
             "gzip" => {
-                let mut decoder = flate2::read::GzDecoder::new(body.as_ref());
+                let mut decoder = flate2::read::MultiGzDecoder::new(body.as_ref());
                 read_to_end_limited(&mut decoder, &encoding, max_bytes)?
             }
             #[cfg(feature = "compression-gzip")]
@@ -323,5 +323,35 @@ mod tests {
     #[test]
     fn disabled_zstd_is_rejected() {
         assert_disabled_codec_is_rejected("zstd");
+    }
+
+    #[cfg(feature = "compression-gzip")]
+    #[test]
+    fn gzip_decodes_all_members_and_checks_the_combined_limit_and_tail() {
+        fn member(data: &[u8]) -> Vec<u8> {
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            encoder.write_all(data).expect("encode member");
+            encoder.finish().expect("finish member")
+        }
+        let mut encoded = member(&[b'a'; 80]);
+        encoded.extend(member(&[b'b'; 80]));
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_ENCODING, "gzip".parse().expect("header"));
+        let decoded = decode_content_encoded_body_limited(encoded.clone().into(), &headers, 160)
+            .expect("decode both members");
+        assert_eq!(decoded.len(), 160);
+        assert_eq!(&decoded[..80], &[b'a'; 80]);
+        assert_eq!(&decoded[80..], &[b'b'; 80]);
+        assert!(encoded.len() < 100, "limit must apply to decoded bytes");
+        assert!(matches!(
+            decode_content_encoded_body_limited(encoded.clone().into(), &headers, 100),
+            Err(super::DecodeContentEncodingError::TooLarge { .. })
+        ));
+        encoded.pop();
+        assert!(matches!(
+            decode_content_encoded_body_limited(encoded.into(), &headers, 160),
+            Err(super::DecodeContentEncodingError::Decode { .. })
+        ));
     }
 }

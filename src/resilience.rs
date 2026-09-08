@@ -291,15 +291,28 @@ enum CircuitAttemptKind {
 
 enum CircuitState {
     Closed {
+        generation: Arc<()>,
         consecutive_failures: usize,
     },
     Open {
         opened_at: Instant,
     },
     HalfOpen {
+        generation: Arc<()>,
         active_requests: usize,
         successful_requests: usize,
     },
+}
+
+impl CircuitState {
+    fn belongs_to(&self, attempt_generation: &Arc<()>) -> bool {
+        match self {
+            Self::Closed { generation, .. } | Self::HalfOpen { generation, .. } => {
+                Arc::ptr_eq(generation, attempt_generation)
+            }
+            Self::Open { .. } => false,
+        }
+    }
 }
 
 pub(crate) struct CircuitBreaker {
@@ -315,6 +328,7 @@ impl CircuitBreaker {
             policy,
             clock,
             state: Mutex::new(CircuitState::Closed {
+                generation: Arc::new(()),
                 consecutive_failures: 0,
             }),
         }
@@ -324,7 +338,8 @@ impl CircuitBreaker {
         let mut state = lock_unpoisoned(&self.state);
         let now = self.clock.now_monotonic();
         match &mut *state {
-            CircuitState::Closed { .. } => Ok(CircuitAttempt {
+            CircuitState::Closed { generation, .. } => Ok(CircuitAttempt {
+                generation: Arc::clone(generation),
                 breaker: Arc::clone(self),
                 kind: CircuitAttemptKind::Closed,
                 completed: false,
@@ -332,11 +347,14 @@ impl CircuitBreaker {
             CircuitState::Open { opened_at } => {
                 let elapsed = now.saturating_duration_since(*opened_at);
                 if elapsed >= self.policy.open_timeout {
+                    let generation = Arc::new(());
                     *state = CircuitState::HalfOpen {
+                        generation: Arc::clone(&generation),
                         active_requests: 1,
                         successful_requests: 0,
                     };
                     return Ok(CircuitAttempt {
+                        generation,
                         breaker: Arc::clone(self),
                         kind: CircuitAttemptKind::HalfOpen,
                         completed: false,
@@ -345,6 +363,7 @@ impl CircuitBreaker {
                 Err(self.policy.open_timeout - elapsed)
             }
             CircuitState::HalfOpen {
+                generation,
                 active_requests,
                 successful_requests,
             } => {
@@ -355,6 +374,7 @@ impl CircuitBreaker {
                 }
                 *active_requests = active_requests.saturating_add(1);
                 Ok(CircuitAttempt {
+                    generation: Arc::clone(generation),
                     breaker: Arc::clone(self),
                     kind: CircuitAttemptKind::HalfOpen,
                     completed: false,
@@ -363,12 +383,16 @@ impl CircuitBreaker {
         }
     }
 
-    fn record_success(&self, kind: CircuitAttemptKind) {
+    fn record_success(&self, kind: CircuitAttemptKind, generation: &Arc<()>) {
         let mut state = lock_unpoisoned(&self.state);
+        if !state.belongs_to(generation) {
+            return;
+        }
         match (&mut *state, kind) {
             (
                 CircuitState::Closed {
                     consecutive_failures,
+                    ..
                 },
                 CircuitAttemptKind::Closed,
             ) => {
@@ -378,6 +402,7 @@ impl CircuitBreaker {
                 CircuitState::HalfOpen {
                     active_requests,
                     successful_requests,
+                    ..
                 },
                 CircuitAttemptKind::HalfOpen,
             ) => {
@@ -389,12 +414,16 @@ impl CircuitBreaker {
         }
     }
 
-    fn record_failure(&self, kind: CircuitAttemptKind) {
+    fn record_failure(&self, kind: CircuitAttemptKind, generation: &Arc<()>) {
         let mut state = lock_unpoisoned(&self.state);
+        if !state.belongs_to(generation) {
+            return;
+        }
         match (&mut *state, kind) {
             (
                 CircuitState::Closed {
                     consecutive_failures,
+                    ..
                 },
                 CircuitAttemptKind::Closed,
             ) => {
@@ -420,8 +449,11 @@ impl CircuitBreaker {
         }
     }
 
-    fn record_cancel(&self, kind: CircuitAttemptKind) {
+    fn record_cancel(&self, kind: CircuitAttemptKind, generation: &Arc<()>) {
         let mut state = lock_unpoisoned(&self.state);
+        if !state.belongs_to(generation) {
+            return;
+        }
         if let (
             CircuitState::HalfOpen {
                 active_requests, ..
@@ -439,11 +471,13 @@ fn close_half_open_if_recovered(state: &mut CircuitState, half_open_success_thre
     if let CircuitState::HalfOpen {
         active_requests,
         successful_requests,
+        ..
     } = state
         && *active_requests == 0
         && *successful_requests >= half_open_success_threshold
     {
         *state = CircuitState::Closed {
+            generation: Arc::new(()),
             consecutive_failures: 0,
         };
     }
@@ -459,6 +493,8 @@ impl std::fmt::Debug for CircuitBreaker {
 }
 
 pub(crate) struct CircuitAttempt {
+    // An identity token avoids accepting late results from an earlier state cycle.
+    generation: Arc<()>,
     breaker: Arc<CircuitBreaker>,
     kind: CircuitAttemptKind,
     completed: bool,
@@ -466,17 +502,17 @@ pub(crate) struct CircuitAttempt {
 
 impl CircuitAttempt {
     pub(crate) fn mark_success(mut self) {
-        self.breaker.record_success(self.kind);
+        self.breaker.record_success(self.kind, &self.generation);
         self.completed = true;
     }
 
     pub(crate) fn mark_failure(mut self) {
-        self.breaker.record_failure(self.kind);
+        self.breaker.record_failure(self.kind, &self.generation);
         self.completed = true;
     }
 
     pub(crate) fn cancel(mut self) {
-        self.breaker.record_cancel(self.kind);
+        self.breaker.record_cancel(self.kind, &self.generation);
         self.completed = true;
     }
 }
@@ -498,7 +534,7 @@ impl crate::core::execution::AttemptOutcome for CircuitAttempt {
 impl Drop for CircuitAttempt {
     fn drop(&mut self) {
         if !self.completed {
-            self.breaker.record_cancel(self.kind);
+            self.breaker.record_cancel(self.kind, &self.generation);
             self.completed = true;
         }
     }
@@ -1351,5 +1387,87 @@ mod tests {
             state.current_limit, 1,
             "runtime normalization should not round a nonzero sub-millisecond threshold up to 1ms"
         );
+    }
+
+    #[test]
+    fn old_half_open_outcomes_do_not_change_new_probe_capacity() {
+        use super::CircuitAttempt;
+        let outcomes: [fn(CircuitAttempt); 4] = [
+            CircuitAttempt::mark_success,
+            CircuitAttempt::mark_failure,
+            CircuitAttempt::cancel,
+            drop,
+        ];
+        for finish_old in outcomes {
+            let clock = Arc::new(TestClock::default());
+            let breaker = Arc::new(CircuitBreaker::new(
+                CircuitBreakerPolicy::standard()
+                    .failure_threshold(1)
+                    .open_timeout(Duration::from_secs(1))
+                    .half_open_max_requests(2)
+                    .half_open_success_threshold(2),
+                clock.clone(),
+            ));
+            breaker.begin().expect("closed attempt").mark_failure();
+            clock.advance(Duration::from_secs(2));
+            let old_probe = breaker.begin().expect("old probe");
+            breaker.begin().expect("failing probe").mark_failure();
+            clock.advance(Duration::from_secs(2));
+            let new_a = breaker.begin().expect("new probe a");
+            let new_b = breaker.begin().expect("new probe b");
+            finish_old(old_probe);
+            assert!(
+                breaker.begin().is_err(),
+                "old result must not free new probe capacity"
+            );
+            new_a.mark_success();
+            let new_c = breaker
+                .begin()
+                .expect("old failure must not reopen the circuit");
+            new_b.cancel();
+            new_c.cancel();
+            let last_probe = breaker
+                .begin()
+                .expect("one successful probe is not enough to close");
+            last_probe.mark_failure();
+            assert!(breaker.begin().is_err(), "must still be a half-open probe");
+        }
+    }
+
+    #[test]
+    fn old_closed_outcomes_do_not_change_recovered_failure_streak() {
+        use super::CircuitAttempt;
+        let outcomes: [fn(CircuitAttempt); 4] = [
+            CircuitAttempt::mark_success,
+            CircuitAttempt::mark_failure,
+            CircuitAttempt::cancel,
+            drop,
+        ];
+        for finish_old in outcomes {
+            let clock = Arc::new(TestClock::default());
+            let breaker = Arc::new(CircuitBreaker::new(
+                CircuitBreakerPolicy::standard()
+                    .failure_threshold(2)
+                    .open_timeout(Duration::from_secs(1))
+                    .half_open_max_requests(1)
+                    .half_open_success_threshold(1),
+                clock.clone(),
+            ));
+            let old = breaker.begin().expect("old closed request");
+            breaker.begin().expect("failure 1").mark_failure();
+            breaker.begin().expect("failure 2").mark_failure();
+            clock.advance(Duration::from_secs(2));
+            breaker.begin().expect("recovery probe").mark_success();
+            breaker.begin().expect("new failure 1").mark_failure();
+            finish_old(old);
+            breaker
+                .begin()
+                .expect("old failure must not open recovered circuit")
+                .mark_failure();
+            assert!(
+                breaker.begin().is_err(),
+                "old success must not reset new failure streak"
+            );
+        }
     }
 }

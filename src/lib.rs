@@ -1,6 +1,17 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(not(any(feature = "_async", feature = "_blocking")), allow(dead_code))]
 #![warn(missing_docs)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::panic,
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::unreachable
+    )
+)]
 
 //! `reqx` is a reusable HTTP transport crate for Rust API SDKs with retry,
 //! timeout, idempotency, proxy, streaming, and pluggable TLS backends.

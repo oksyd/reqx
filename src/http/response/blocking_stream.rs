@@ -68,7 +68,7 @@ fn deadline_exceeded_error(
 pub struct BlockingResponseStream {
     status: StatusCode,
     headers: HeaderMap,
-    body: ureq::Body,
+    body: Option<ureq::Body>,
     method: http::Method,
     uri_raw: String,
     uri_redacted: String,
@@ -116,7 +116,7 @@ impl BlockingResponseStream {
         Self {
             status,
             headers,
-            body,
+            body: Some(body),
             method,
             uri_raw,
             uri_redacted,
@@ -230,7 +230,7 @@ impl BlockingResponseStream {
         buffer: &mut [u8],
         complete_success_on_eof: bool,
     ) -> crate::Result<usize> {
-        if buffer.is_empty() {
+        if buffer.is_empty() || self.body.is_none() {
             return Ok(0);
         }
 
@@ -240,7 +240,10 @@ impl BlockingResponseStream {
                 return Err(error);
             }
             let deadline_limited = self.current_read_is_deadline_limited();
-            match self.body.as_reader().read(buffer) {
+            let Some(body) = self.body.as_mut() else {
+                return Ok(0);
+            };
+            match body.as_reader().read(buffer) {
                 Ok(read) => {
                     if let Err(error) = self.ensure_within_deadline() {
                         self.complete_error(&error);
@@ -440,11 +443,19 @@ impl BlockingResponseStream {
         response.json()
     }
 
+    fn release_transport(&mut self) {
+        self.body = None;
+        self._global_permit = None;
+        self._host_permit = None;
+    }
+
     fn complete_success(&mut self) {
+        self.release_transport();
         super::complete_success(&mut self.lifecycle);
     }
 
     fn complete_error(&mut self, error: &Error) {
+        self.release_transport();
         super::complete_error(&mut self.lifecycle, error);
     }
 }

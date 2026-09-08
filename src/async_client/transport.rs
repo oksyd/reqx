@@ -550,8 +550,14 @@ fn apply_native_tls_protocol_versions(
 #[cfg(feature = "async-tls-native")]
 fn build_native_tls_connector(
     tls_options: &TlsOptions,
+    http2_only: bool,
 ) -> crate::Result<hyper_tls::native_tls::TlsConnector> {
     let mut connector_builder = hyper_tls::native_tls::TlsConnector::builder();
+    connector_builder.request_alpns(if http2_only {
+        &["h2"]
+    } else {
+        &["h2", "http/1.1"]
+    });
 
     if !tls_options.root_certificates.is_empty()
         && !matches!(
@@ -664,12 +670,8 @@ fn build_native_tls_transport(
     http2_only: bool,
 ) -> crate::Result<TransportClient> {
     let connector = ProxyConnector::new(proxy_config, connect_timeout);
-    let https = if tls_options.has_customizations() {
-        let tls_connector = build_native_tls_connector(tls_options)?;
-        hyper_tls::HttpsConnector::from((connector, tls_connector.into()))
-    } else {
-        hyper_tls::HttpsConnector::new_with_connector(connector)
-    };
+    let tls_connector = build_native_tls_connector(tls_options, http2_only)?;
+    let https = hyper_tls::HttpsConnector::from((connector, tls_connector.into()));
     let transport = HyperClient::builder(TokioExecutor::new())
         .pool_idle_timeout(pool_idle_timeout)
         .pool_max_idle_per_host(pool_max_idle_per_host)

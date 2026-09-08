@@ -8,6 +8,7 @@ use http::Method;
 
 use crate::error::{Error, ErrorCode, TimeoutPhase, TransportErrorKind};
 use crate::otel::{OtelRequestSpan, OtelTelemetry};
+#[cfg(feature = "_blocking")]
 use crate::response::Response;
 use crate::util::lock_unpoisoned;
 
@@ -137,6 +138,62 @@ pub(crate) struct InFlightGuard {
     inner: Option<Arc<ClientMetricsInner>>,
 }
 
+/// Owns completion accounting from the first poll until a response is returned.
+#[cfg(feature = "_async")]
+pub(crate) struct PendingRequest {
+    metrics: ClientMetrics,
+    request_span: Option<OtelRequestSpan>,
+    request_started_at: Instant,
+    in_flight: InFlightGuard,
+    completed: bool,
+}
+
+#[cfg(feature = "_async")]
+impl PendingRequest {
+    pub(crate) fn complete_success(mut self, status: u16) {
+        self.completed = true;
+        self.metrics
+            .record_request_completed_success(status, self.request_started_at.elapsed());
+        if let Some(span) = self.request_span.take() {
+            self.metrics.finish_otel_request_span_success(span, status);
+        }
+    }
+
+    pub(crate) fn complete_error(mut self, error: &Error) {
+        self.completed = true;
+        self.metrics
+            .record_request_completed_error(error, self.request_started_at.elapsed());
+        if let Some(span) = self.request_span.take() {
+            self.metrics.finish_otel_request_span_error(span, error);
+        }
+    }
+
+    pub(crate) fn into_stream(mut self, status: u16) -> StreamCompletion {
+        self.completed = true;
+        self.metrics.stream_completion(
+            self.request_span.take(),
+            self.request_started_at,
+            status,
+            InFlightGuard {
+                inner: self.in_flight.inner.take(),
+            },
+        )
+    }
+}
+
+#[cfg(feature = "_async")]
+impl Drop for PendingRequest {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.metrics
+                .record_request_completed_canceled(self.request_started_at.elapsed());
+            if let Some(span) = self.request_span.take() {
+                self.metrics.finish_otel_request_span_canceled(span);
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct StreamCompletion {
     metrics: ClientMetrics,
@@ -176,6 +233,25 @@ impl ClientMetrics {
         Self {
             inner: metrics_enabled.then(|| Arc::new(ClientMetricsInner::default())),
             otel,
+        }
+    }
+
+    #[cfg(feature = "_async")]
+    pub(crate) fn pending_request(
+        &self,
+        method: &Method,
+        uri: &str,
+        stream: bool,
+        request_started_at: Instant,
+    ) -> PendingRequest {
+        let request_span = Some(self.start_otel_request_span(method, uri, stream));
+        self.record_request_started();
+        PendingRequest {
+            metrics: self.clone(),
+            request_span,
+            request_started_at,
+            in_flight: self.enter_in_flight(),
+            completed: false,
         }
     }
 
@@ -234,6 +310,7 @@ impl ClientMetrics {
         self.otel.record_retry();
     }
 
+    #[cfg(feature = "_blocking")]
     pub(crate) fn record_request_completed(
         &self,
         result: &Result<Response, Error>,
