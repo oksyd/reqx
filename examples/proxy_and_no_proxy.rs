@@ -13,7 +13,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .retry_policy(RetryPolicy::disabled())
         .http_proxy(proxy_uri)
         .try_proxy_authorization("Basic ZGVtbzpkZW1v")?
-        .no_proxy(["localhost", "127.0.0.1", ".internal.example.com"])
+        .no_proxy([
+            "localhost",
+            "127.0.0.0/8",
+            "2001:db8::/32",
+            ".internal.example.com",
+        ])
         .build()?;
 
     // This example focuses on proxy configuration. Update the proxy URI above and

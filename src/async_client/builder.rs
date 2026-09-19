@@ -309,6 +309,14 @@ impl ClientBuilder {
     }
 
     /// Replaces the current `no_proxy` rule set.
+    ///
+    /// Accepts existing hostname, IP, wildcard and port rules, plus IPv4/IPv6
+    /// CIDRs such as `192.168.88.0/24` or `2001:db8::/32`. CIDRs match only URL
+    /// IP literals of the same address family, on any port; no DNS lookup is
+    /// performed. Host bits are normalized (e.g. `192.168.88.42/24` becomes
+    /// `192.168.88.0/24`). CIDRs with ports, brackets or zone IDs are invalid.
+    /// Each redirect destination is evaluated separately. Invalid rules cause
+    /// [`Self::build`] to return [`crate::Error::InvalidNoProxyRule`].
     pub fn no_proxy<I, S>(mut self, rules: I) -> Self
     where
         I: IntoIterator<Item = S>,

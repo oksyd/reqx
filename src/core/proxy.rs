@@ -51,6 +51,7 @@ pub(crate) struct ProxyConfig {
 #[derive(Clone, Debug)]
 pub(crate) enum NoProxyRule {
     Any,
+    Cidr(ipnet::IpNet),
     Domain { host: String, port: Option<u16> },
 }
 
@@ -67,6 +68,12 @@ fn normalize_no_proxy_host(host: &str) -> Option<String> {
 }
 
 fn parse_ip_literal(host: &str) -> Option<IpAddr> {
+    if let Some(inner) = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+    {
+        return inner.parse::<std::net::Ipv6Addr>().ok().map(IpAddr::V6);
+    }
     host.parse().ok()
 }
 
@@ -147,6 +154,14 @@ impl NoProxyRule {
         } else if looks_like_url_rule(&candidate) {
             return None;
         }
+        // URL rules above retain their existing path and port validation.
+        // A slash in any other rule unambiguously denotes CIDR: never fall back.
+        if candidate.contains('/') {
+            return candidate
+                .parse::<ipnet::IpNet>()
+                .ok()
+                .map(|net| Self::Cidr(net.trunc()));
+        }
         candidate = if let Some(host) = candidate.strip_prefix("*.") {
             host.to_owned()
         } else {
@@ -189,6 +204,7 @@ impl NoProxyRule {
     pub(crate) fn matches(&self, host: &str, port: Option<u16>) -> bool {
         match self {
             Self::Any => true,
+            Self::Cidr(network) => parse_ip_literal(host).is_some_and(|ip| network.contains(&ip)),
             Self::Domain {
                 host: domain,
                 port: rule_port,
@@ -479,6 +495,116 @@ pub(crate) fn normalize_tunnel_target_uri(dst: Uri) -> Uri {
 #[cfg(test)]
 mod rule_tests {
     use super::{NoProxyRule, should_bypass_proxy_uri};
+
+    #[test]
+    fn cidr_rules_match_only_literal_ips_in_the_same_family() {
+        for (rule, matches, misses) in [
+            (
+                "192.168.88.42/24",
+                vec!["192.168.88.0", "192.168.88.255"],
+                vec!["192.168.87.255", "192.168.89.0"],
+            ),
+            (
+                "127.0.0.0/8",
+                vec!["127.0.0.1", "127.255.255.255"],
+                vec!["126.255.255.255", "128.0.0.0"],
+            ),
+            (
+                "0.0.0.0/0",
+                vec!["0.0.0.0", "255.255.255.255"],
+                vec!["::1", "::ffff:127.0.0.1"],
+            ),
+            (
+                "127.0.0.1/32",
+                vec!["127.0.0.1"],
+                vec!["127.0.0.0", "127.0.0.2"],
+            ),
+            (
+                "::/0",
+                vec!["::", "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"],
+                vec!["127.0.0.1"],
+            ),
+            ("::1/128", vec!["::1", "[::1]"], vec!["::", "::2"]),
+            (
+                "2001:db8::1234/32",
+                vec!["2001:db8::", "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff"],
+                vec!["2001:db7::", "2001:db9::"],
+            ),
+        ] {
+            let parsed = NoProxyRule::parse(rule).expect("CIDR");
+            for host in matches {
+                for port in [None, Some(80), Some(443), Some(8080)] {
+                    assert!(parsed.matches(host, port), "{rule}: {host}:{port:?}");
+                }
+            }
+            for host in misses.into_iter().chain(["localhost", "example.com"]) {
+                assert!(!parsed.matches(host, Some(80)), "{rule}: {host}");
+            }
+        }
+        let NoProxyRule::Cidr(net) = NoProxyRule::parse(" 192.168.88.42/24 ").expect("CIDR") else {
+            panic!("expected CIDR");
+        };
+        assert_eq!(net.to_string(), "192.168.88.0/24");
+    }
+
+    #[test]
+    fn cidr_rules_reject_invalid_or_ambiguous_syntax() {
+        for text in [
+            "1.2.3.4/33",
+            "::/129",
+            "1.2.3.4/-1",
+            "::/+1",
+            "1.2.3.4/",
+            "1.2.3.4/999",
+            "1.2.3.4/24/8",
+            "999.0.0.1/8",
+            "example.com/24",
+            "*.example.com/24",
+            "1.2.3.4/24:80",
+            "[::1]/128",
+            "[::1]:80/128",
+            "fe80::1%eth0/64",
+            "http://1.2.3.4/24",
+            "https://[::1]/128",
+            "1.2.3.4/ 24",
+        ] {
+            assert!(NoProxyRule::parse(text).is_none(), "{text}");
+        }
+    }
+
+    #[test]
+    fn cidr_rules_mix_with_existing_rules_without_changing_their_semantics() {
+        let rules = super::parse_no_proxy_rules([
+            "192.168.88.0/24",
+            "::1/128",
+            "*.example.com:443",
+            "localhost",
+        ])
+        .expect("rules");
+        for uri in [
+            "http://192.168.88.23:8080/",
+            "http://[::1]/",
+            "https://example.com/",
+            "https://sub.example.com/",
+            "http://localhost/",
+        ] {
+            assert!(
+                should_bypass_proxy_uri(&rules, &uri.parse().expect("URI")),
+                "{uri}"
+            );
+        }
+        for uri in [
+            "http://192.168.89.23/",
+            "http://[::2]/",
+            "http://sub.example.com/",
+            "http://other.invalid/",
+        ] {
+            assert!(
+                !should_bypass_proxy_uri(&rules, &uri.parse().expect("URI")),
+                "{uri}"
+            );
+        }
+    }
 
     #[test]
     fn no_proxy_url_rules_preserve_domain_suffix_matching() {

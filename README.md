@@ -17,7 +17,7 @@ blocking clients.
 - Rate limiting, concurrency limits, and multi-endpoint routing
 - Rustls or native-tls, including custom CAs and mTLS
 - Fixed DNS addresses preserving Host and TLS identity
-- Proxies, redirects, response size limits, and structured errors
+- Proxies with CIDR exclusions, redirects, size limits, and structured errors
 - Metrics, observers, interceptors, and optional OpenTelemetry integration
 
 ## Installation
