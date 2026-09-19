@@ -288,6 +288,9 @@ impl<'a> RequestBuilder<'a> {
     }
 
     /// Overrides automatic `Accept-Encoding` injection for this request.
+    ///
+    /// Automatic injection skips HEAD and Range requests and preserves an
+    /// explicitly supplied `Accept-Encoding` header.
     pub fn auto_accept_encoding(mut self, enabled: bool) -> Self {
         self.execution_overrides.auto_accept_encoding = Some(enabled);
         self

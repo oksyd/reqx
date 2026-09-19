@@ -4933,3 +4933,55 @@ fn blocking_interceptor_observes_response_before_decode_failure() {
     assert_eq!(response_hits.load(Ordering::SeqCst), 1);
     assert_eq!(error_hits.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn query_helpers_preserve_existing_wire_encoding() {
+    for absolute in [false, true] {
+        let server = MockServer::start(vec![MockResponse::new(
+            200,
+            vec![("Content-Type", "text/plain")],
+            b"ok".to_vec(),
+        )]);
+        let client = Client::builder(&server.base_url)
+            .retry_policy(RetryPolicy::disabled())
+            .build()
+            .expect("client");
+        let path = "/query?token=%2f%2F&space=%20&flag&raw=%FF";
+        let target = if absolute {
+            format!("{}{path}", server.base_url)
+        } else {
+            path.to_owned()
+        };
+        client
+            .get(&target)
+            .query_pair("next", "a b+c")
+            .send()
+            .expect("request");
+        assert_eq!(server.requests()[0].path, format!("{path}&next=a+b%2Bc"));
+    }
+}
+
+#[test]
+fn range_requests_do_not_negotiate_compression() {
+    let server = MockServer::start(vec![MockResponse::new(
+        200,
+        vec![("Content-Type", "text/plain")],
+        b"ok".to_vec(),
+    )]);
+    let client = Client::builder(&server.base_url)
+        .retry_policy(RetryPolicy::disabled())
+        .build()
+        .expect("client");
+    client
+        .get("/range")
+        .try_header("Range", "bytes=10-20")
+        .expect("header")
+        .send()
+        .expect("request");
+    let requests = server.requests();
+    assert_eq!(
+        requests[0].headers.get("range").map(String::as_str),
+        Some("bytes=10-20")
+    );
+    assert!(!requests[0].headers.contains_key("accept-encoding"));
+}

@@ -8,6 +8,7 @@
 use std::io;
 
 #[cfg(any(
+    feature = "_blocking",
     all(test, feature = "_async"),
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
@@ -58,6 +59,9 @@ fn classify_transport_error_source_chain(
     error: &(dyn std::error::Error + 'static),
     is_connect_path: bool,
 ) -> Option<TransportErrorKind> {
+    if is_tls_error(error) {
+        return Some(TransportErrorKind::Tls);
+    }
     let mut current = Some(error);
     while let Some(source) = current {
         if let Some(kind) = classify_transport_error_source(source, is_connect_path) {
@@ -79,15 +83,6 @@ fn classify_transport_error_source(
     is_connect_path: bool,
 ) -> Option<TransportErrorKind> {
     if let Some(error) = error.downcast_ref::<io::Error>() {
-        if let Some(source) = error.get_ref()
-            && let Some(TransportErrorKind::Tls) =
-                classify_transport_error_source_chain(source, is_connect_path)
-        {
-            // TLS libraries are often wrapped inside io::Error by connector stacks.
-            // Keep the handshake/certificate classification instead of downgrading
-            // it to a generic read/connect bucket derived from io::ErrorKind.
-            return Some(TransportErrorKind::Tls);
-        }
         return classify_io_transport_error_kind(error.kind(), is_connect_path);
     }
 
@@ -107,32 +102,17 @@ fn classify_transport_error_source(
         }
     }
 
-    #[cfg(any(
-        feature = "async-tls-rustls-ring",
-        feature = "async-tls-rustls-aws-lc-rs"
-    ))]
-    if error.downcast_ref::<rustls::Error>().is_some() {
-        return Some(TransportErrorKind::Tls);
-    }
-
-    #[cfg(feature = "async-tls-native")]
-    if error
-        .downcast_ref::<hyper_tls::native_tls::Error>()
-        .is_some()
-    {
-        return Some(TransportErrorKind::Tls);
-    }
-
     None
 }
 
 #[cfg(any(
+    feature = "_blocking",
     all(test, feature = "_async"),
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
     feature = "async-tls-rustls-aws-lc-rs"
 ))]
-fn classify_io_transport_error_kind(
+pub(crate) fn classify_io_transport_error_kind(
     kind: io::ErrorKind,
     is_connect_path: bool,
 ) -> Option<TransportErrorKind> {
@@ -272,4 +252,37 @@ pub(crate) fn classify_transport_error_source_for_test(
     is_connect_path: bool,
 ) -> Option<TransportErrorKind> {
     classify_transport_error_source_chain(error, is_connect_path)
+}
+
+/// Inspect concrete causes rather than error text; io::Error::source() can skip
+/// the wrapped error itself, so use get_ref() to retain its TLS type.
+#[cfg(any(feature = "_async", feature = "_blocking"))]
+pub(crate) fn is_tls_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(cause) = current {
+        #[cfg(any(
+            feature = "async-tls-rustls-ring",
+            feature = "async-tls-rustls-aws-lc-rs",
+            feature = "blocking-tls-rustls-ring",
+            feature = "blocking-tls-rustls-aws-lc-rs"
+        ))]
+        if cause.is::<rustls::Error>() {
+            return true;
+        }
+        #[cfg(feature = "async-tls-native")]
+        if cause.is::<hyper_tls::native_tls::Error>() {
+            return true;
+        }
+        #[cfg(all(feature = "blocking-tls-native", not(feature = "async-tls-native")))]
+        if cause.is::<native_tls::Error>() {
+            return true;
+        }
+        current = if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+            io.get_ref()
+                .map(|inner| inner as &(dyn std::error::Error + 'static))
+        } else {
+            cause.source()
+        };
+    }
+    false
 }

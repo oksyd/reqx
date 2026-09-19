@@ -54,7 +54,9 @@ pub(crate) use timing::{duration_from_millis_saturating, saturating_u64_to_usize
 ))]
 pub(crate) use transport_error::classify_transport_error;
 #[cfg(feature = "_blocking")]
-pub(crate) use transport_error::is_timeout_io_error;
+pub(crate) use transport_error::{
+    classify_io_transport_error_kind, is_timeout_io_error, is_tls_error,
+};
 #[cfg(all(test, feature = "_async"))]
 pub(crate) use transport_error::{
     classify_transport_error_source_for_test, classify_transport_error_text_for_test,

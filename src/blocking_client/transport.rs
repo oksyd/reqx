@@ -441,23 +441,11 @@ pub(super) fn classify_ureq_transport_error(error: &ureq::Error) -> TransportErr
         ureq::Error::ConnectProxyFailed(_) | ureq::Error::ConnectionFailed => {
             TransportErrorKind::Connect
         }
-        ureq::Error::Io(source) => match source.kind() {
-            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => {
-                TransportErrorKind::Read
-            }
-            std::io::ErrorKind::NotFound => TransportErrorKind::Dns,
-            std::io::ErrorKind::ConnectionRefused
-            | std::io::ErrorKind::ConnectionAborted
-            | std::io::ErrorKind::NotConnected
-            | std::io::ErrorKind::AddrNotAvailable
-            | std::io::ErrorKind::HostUnreachable
-            | std::io::ErrorKind::NetworkUnreachable
-            | std::io::ErrorKind::NetworkDown => TransportErrorKind::Connect,
-            std::io::ErrorKind::ConnectionReset
-            | std::io::ErrorKind::BrokenPipe
-            | std::io::ErrorKind::UnexpectedEof => TransportErrorKind::Read,
-            _ => TransportErrorKind::Other,
-        },
+        ureq::Error::Io(source) if crate::util::is_tls_error(source) => TransportErrorKind::Tls,
+        ureq::Error::Io(source) => {
+            crate::util::classify_io_transport_error_kind(source.kind(), false)
+                .unwrap_or(TransportErrorKind::Other)
+        }
         _ => TransportErrorKind::Other,
     }
 }
@@ -739,6 +727,37 @@ mod native_tls_config_tests {
 mod transport_error_classification_tests {
     use super::classify_ureq_transport_error;
     use crate::error::TransportErrorKind;
+
+    #[cfg(any(
+        feature = "blocking-tls-rustls-ring",
+        feature = "blocking-tls-rustls-aws-lc-rs"
+    ))]
+    #[test]
+    fn wrapped_tls_errors_retain_their_category() {
+        for kind in [
+            std::io::ErrorKind::InvalidData,
+            std::io::ErrorKind::Other,
+            std::io::ErrorKind::ConnectionReset,
+        ] {
+            let error = ureq::Error::Io(std::io::Error::new(
+                kind,
+                std::io::Error::other(rustls::Error::InvalidCertificate(
+                    rustls::CertificateError::Expired,
+                )),
+            ));
+            assert_eq!(
+                classify_ureq_transport_error(&error),
+                TransportErrorKind::Tls
+            );
+        }
+        let error = ureq::Error::Io(std::io::Error::other(
+            "certificate error in arbitrary user text",
+        ));
+        assert_eq!(
+            classify_ureq_transport_error(&error),
+            TransportErrorKind::Other
+        );
+    }
 
     #[test]
     fn blocking_transport_maps_extended_connect_error_kinds() {

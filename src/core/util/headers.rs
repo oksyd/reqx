@@ -34,7 +34,12 @@ fn enabled_accept_encoding() -> Option<&'static str> {
 }
 
 fn ensure_accept_encoding(method: &Method, headers: &mut HeaderMap) {
-    if *method == Method::HEAD || headers.contains_key(ACCEPT_ENCODING) {
+    // Byte ranges refer to the encoded representation. Automatically negotiating
+    // compression can turn an ordinary range into a fragment we cannot decode.
+    if *method == Method::HEAD
+        || headers.contains_key(ACCEPT_ENCODING)
+        || headers.contains_key(http::header::RANGE)
+    {
         return;
     }
     if let Some(value) = enabled_accept_encoding() {
@@ -149,13 +154,14 @@ pub(crate) fn validate_request_framing_headers(
 }
 
 pub(crate) fn truncate_body(body: &[u8]) -> String {
-    let text = String::from_utf8_lossy(body);
-    if text.chars().count() <= MAX_ERROR_BODY_LEN {
-        return text.into_owned();
+    // One Unicode scalar consumes at most four input bytes. Include one extra
+    // scalar to detect truncation without decoding or copying an entire body.
+    let prefix = &body[..body.len().min((MAX_ERROR_BODY_LEN + 1) * 4)];
+    let text = String::from_utf8_lossy(prefix);
+    match text.char_indices().nth(MAX_ERROR_BODY_LEN) {
+        Some((end, _)) => format!("{}...(truncated)", &text[..end]),
+        None => text.into_owned(),
     }
-
-    let truncated: String = text.chars().take(MAX_ERROR_BODY_LEN).collect();
-    format!("{truncated}...(truncated)")
 }
 
 #[cfg(test)]
@@ -164,6 +170,40 @@ mod tests {
     use http::{HeaderMap, HeaderValue, Method};
 
     use super::ensure_accept_encoding;
+
+    #[test]
+    fn error_body_excerpt_handles_unicode_and_invalid_utf8_at_the_limit() {
+        use super::{MAX_ERROR_BODY_LEN, truncate_body};
+        for character in ["a", "é", "界", "🦀"] {
+            let exact = character.repeat(MAX_ERROR_BODY_LEN);
+            assert_eq!(truncate_body(exact.as_bytes()), exact);
+            let mut longer = exact.clone();
+            longer.push_str(character);
+            assert_eq!(
+                truncate_body(longer.as_bytes()),
+                format!("{exact}...(truncated)")
+            );
+        }
+        let invalid = vec![0xff; 64 * 1024];
+        assert_eq!(
+            truncate_body(&invalid),
+            format!("{}...(truncated)", "�".repeat(MAX_ERROR_BODY_LEN))
+        );
+        assert_eq!(truncate_body(b""), "");
+        assert_eq!(truncate_body(&[0xf0, 0x9f]), "�");
+    }
+
+    #[cfg(feature = "compression-gzip")]
+    #[test]
+    fn range_requests_do_not_implicitly_negotiate_compression() {
+        let mut headers = HeaderMap::new();
+        headers.insert(http::header::RANGE, HeaderValue::from_static("bytes=10-20"));
+        ensure_accept_encoding(&Method::GET, &mut headers);
+        assert!(!headers.contains_key(ACCEPT_ENCODING));
+        headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
+        ensure_accept_encoding(&Method::GET, &mut headers);
+        assert_eq!(headers[ACCEPT_ENCODING], "gzip");
+    }
 
     #[test]
     fn advertised_encodings_match_enabled_codec_features() {

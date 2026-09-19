@@ -839,6 +839,7 @@ async fn request_timeout_reports_transport_phase() {
     assert_eq!(requests[0].path, "/slow");
 }
 
+#[cfg(feature = "compression-gzip")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn decodes_gzip_response_and_sets_accept_encoding() {
     let body = gzip_bytes(br#"{"ok":true}"#);
@@ -1035,6 +1036,7 @@ async fn head_stream_into_response_with_content_encoding_empty_body_succeeds() {
     assert_eq!(requests[0].headers.get("accept-encoding"), None);
 }
 
+#[cfg(feature = "compression-gzip")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn decoded_gzip_response_still_respects_max_body_limit() {
     let expanded = vec![b'a'; 16 * 1024];
@@ -1183,6 +1185,7 @@ async fn send_http_status_error_strips_decoded_encoding_headers() {
     }
 }
 
+#[cfg(feature = "compression-gzip")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stream_into_response_limited_respects_decode_limit() {
     let expanded = vec![b'b'; 16 * 1024];
@@ -4099,4 +4102,60 @@ async fn interceptor_on_error_is_invoked_for_decode_failure() {
     assert_eq!(request_hits.load(Ordering::SeqCst), 1);
     assert_eq!(response_hits.load(Ordering::SeqCst), 1);
     assert_eq!(error_hits.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn query_helpers_preserve_existing_wire_encoding() {
+    for absolute in [false, true] {
+        let server = MockServer::start(vec![MockResponse::new(
+            200,
+            vec![("Content-Type", "text/plain")],
+            "ok",
+            Duration::ZERO,
+        )]);
+        let client = Client::builder(&server.base_url)
+            .retry_policy(RetryPolicy::disabled())
+            .build()
+            .expect("client");
+        let path = "/query?token=%2f%2F&space=%20&flag&raw=%FF";
+        let target = if absolute {
+            format!("{}{path}", server.base_url)
+        } else {
+            path.to_owned()
+        };
+        client
+            .get(&target)
+            .query_pair("next", "a b+c")
+            .send()
+            .await
+            .expect("request");
+        assert_eq!(server.requests()[0].path, format!("{path}&next=a+b%2Bc"));
+    }
+}
+
+#[tokio::test]
+async fn range_requests_do_not_negotiate_compression() {
+    let server = MockServer::start(vec![MockResponse::new(
+        200,
+        vec![("Content-Type", "text/plain")],
+        "ok",
+        Duration::ZERO,
+    )]);
+    let client = Client::builder(&server.base_url)
+        .retry_policy(RetryPolicy::disabled())
+        .build()
+        .expect("client");
+    client
+        .get("/range")
+        .try_header("Range", "bytes=10-20")
+        .expect("header")
+        .send()
+        .await
+        .expect("request");
+    let requests = server.requests();
+    assert_eq!(
+        requests[0].headers.get("range").map(String::as_str),
+        Some("bytes=10-20")
+    );
+    assert!(!requests[0].headers.contains_key("accept-encoding"));
 }

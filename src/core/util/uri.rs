@@ -253,56 +253,26 @@ pub(crate) fn append_query_pairs(path: &str, query_pairs: &[(String, String)]) -
         return path.to_owned();
     }
 
-    if !looks_like_malformed_http_absolute_uri(path)
-        && let Ok(mut url) = url::Url::parse(path)
-    {
-        let existing = url
-            .query()
-            .map(|query| {
-                url::form_urlencoded::parse(query.as_bytes())
-                    .map(|(name, value)| (name.into_owned(), value.into_owned()))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let query = build_query_string(&existing, query_pairs);
-        url.set_query(Some(&query));
-        return url.to_string();
+    // Only encode new pairs. Re-parsing the existing query would change escapes,
+    // bare keys and non-UTF-8 bytes, and URL parsing would also normalize the path.
+    let (prefix, fragment) = path
+        .split_once('#')
+        .map_or((path, None), |(prefix, fragment)| (prefix, Some(fragment)));
+    let mut merged = prefix.to_owned();
+    match prefix.split_once('?') {
+        None => merged.push('?'),
+        Some((_, query)) if !query.is_empty() && !query.ends_with('&') => merged.push('&'),
+        _ => {}
     }
-
-    let (without_fragment, fragment) = match path.split_once('#') {
-        Some((left, right)) => (left, Some(right)),
-        None => (path, None),
-    };
-    let (base, existing_query) = match without_fragment.split_once('?') {
-        Some((left, right)) => (left, Some(right)),
-        None => (without_fragment, None),
-    };
-    let existing = existing_query
-        .map(|query| {
-            url::form_urlencoded::parse(query.as_bytes())
-                .map(|(name, value)| (name.into_owned(), value.into_owned()))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let query = build_query_string(&existing, query_pairs);
-
-    let mut merged = format!("{base}?{query}");
+    let appended = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(query_pairs.iter().map(|(name, value)| (name, value)))
+        .finish();
+    merged.push_str(&appended);
     if let Some(fragment) = fragment {
         merged.push('#');
         merged.push_str(fragment);
     }
     merged
-}
-
-fn build_query_string(existing: &[(String, String)], appended: &[(String, String)]) -> String {
-    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-    for (name, value) in existing {
-        serializer.append_pair(name, value);
-    }
-    for (name, value) in appended {
-        serializer.append_pair(name, value);
-    }
-    serializer.finish()
 }
 
 pub(crate) fn join_base_path(base_url: &str, path: &str) -> String {

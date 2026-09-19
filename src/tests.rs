@@ -4,11 +4,14 @@ use std::error::Error as StdError;
 use std::fmt;
 #[cfg(feature = "_async")]
 use std::io;
+#[cfg(feature = "compression-gzip")]
 use std::io::Write;
 use std::time::{Duration, SystemTime};
 
 use bytes::Bytes;
+#[cfg(feature = "compression-gzip")]
 use flate2::Compression;
+#[cfg(feature = "compression-gzip")]
 use flate2::write::{DeflateEncoder, GzEncoder, ZlibEncoder};
 use http::header::{
     AUTHORIZATION, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, EXPECT,
@@ -738,6 +741,30 @@ fn append_query_pairs_merges_existing_query_and_fragment() {
     assert_eq!(parsed.get("active"), Some(&"true".to_owned()));
     assert_eq!(parsed.get("name"), Some(&"alice bob".to_owned()));
     assert_eq!(parsed.get("page"), Some(&"2".to_owned()));
+}
+
+#[test]
+fn query_append_preserves_existing_uri_bytes() {
+    let pairs = vec![("next".to_owned(), "a b+c".to_owned())];
+    for input in [
+        "/v1/a/../b?token=%2f%2F&space=%20&flag&raw=%FF&&",
+        "https://EXAMPLE.com:443/v1/a/../b?token=%2f%2F&space=%20&flag&raw=%FF&&",
+    ] {
+        assert_eq!(
+            append_query_pairs(input, &pairs),
+            format!("{input}next=a+b%2Bc")
+        );
+    }
+    assert_eq!(
+        append_query_pairs("/v1?q=?#fragment?", &pairs),
+        "/v1?q=?&next=a+b%2Bc#fragment?"
+    );
+    for input in ["/v1?", "https://example.com/v1?"] {
+        assert_eq!(
+            append_query_pairs(input, &pairs),
+            format!("{input}next=a+b%2Bc")
+        );
+    }
 }
 
 #[test]
@@ -2962,6 +2989,7 @@ fn should_decode_content_encoded_body_only_when_body_semantics_allow() {
     ));
 }
 
+#[cfg(feature = "compression-gzip")]
 #[test]
 fn decode_content_encoded_body_decodes_gzip_payload() {
     let source = br#"{"ok":true}"#;
@@ -2982,6 +3010,7 @@ fn decode_content_encoded_body_decodes_gzip_payload() {
     assert_eq!(decoded.as_ref(), source);
 }
 
+#[cfg(feature = "compression-gzip")]
 #[test]
 fn decode_content_encoded_body_accepts_zlib_and_raw_deflate_payloads() {
     let source = br#"{"ok":true}"#;
@@ -3018,6 +3047,7 @@ fn decode_content_encoded_body_accepts_zlib_and_raw_deflate_payloads() {
     assert_eq!(raw_decoded.as_ref(), source);
 }
 
+#[cfg(feature = "compression-gzip")]
 #[test]
 fn decode_content_encoded_body_combines_multiple_content_encoding_headers() {
     let source = br#"{"ok":true}"#;
@@ -3074,6 +3104,7 @@ fn decode_content_encoded_body_limited_rejects_unencoded_payload() {
     }
 }
 
+#[cfg(feature = "compression-gzip")]
 #[test]
 fn decode_content_encoded_body_limited_rejects_expanded_payload() {
     let source = vec![b'a'; 16 * 1024];

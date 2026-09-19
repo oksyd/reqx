@@ -463,7 +463,7 @@ async fn dns_overrides_preserve_blocking_tls_identity() {
                     matches!(
                         response,
                         Err(Error::Transport {
-                            kind: TransportErrorKind::Tls | TransportErrorKind::Other,
+                            kind: TransportErrorKind::Tls,
                             ..
                         })
                     ),
