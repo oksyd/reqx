@@ -1,8 +1,17 @@
+## [0.2.3] - 2026-09-19
+
+### 🐛 Bug Fixes
+
+- Preserve query encoding and correct range handling and TLS errors
 ## [0.2.2] - 2026-09-19
 
 ### 🚀 Features
 
 - Support IPv4 and IPv6 CIDR ranges in no_proxy rules
+
+### ⚙️ Miscellaneous Tasks
+
+- Release reqx version 0.2.2
 ## [0.2.1] - 2026-09-08
 
 ### 🚀 Features
