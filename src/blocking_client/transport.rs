@@ -47,6 +47,8 @@ pub(super) fn backend_is_available(backend: TlsBackend) -> bool {
         TlsBackend::RustlsRing => cfg!(feature = "blocking-tls-rustls-ring"),
         TlsBackend::RustlsAwsLcRs => cfg!(feature = "blocking-tls-rustls-aws-lc-rs"),
         TlsBackend::NativeTls => cfg!(feature = "blocking-tls-native"),
+        // `async-tls-rustls-no-provider` has no blocking `ureq` counterpart.
+        TlsBackend::RustlsNoProvider => false,
     }
 }
 
@@ -179,6 +181,13 @@ fn build_sync_tls_config(
     let provider = match backend {
         TlsBackend::RustlsRing | TlsBackend::RustlsAwsLcRs => ureq::tls::TlsProvider::Rustls,
         TlsBackend::NativeTls => ureq::tls::TlsProvider::NativeTls,
+        // Unreachable in practice: `backend_is_available` above already
+        // rejects `RustlsNoProvider`, which has no blocking `ureq` counterpart.
+        TlsBackend::RustlsNoProvider => {
+            return Err(crate::error::Error::TlsBackendUnavailable {
+                backend: backend.as_str(),
+            });
+        }
     };
 
     let mut tls_config_builder = ureq::tls::TlsConfig::builder().provider(provider);

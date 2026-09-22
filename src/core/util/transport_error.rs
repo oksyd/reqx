@@ -3,7 +3,8 @@
     all(test, feature = "_async"),
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 use std::io;
 
@@ -12,7 +13,8 @@ use std::io;
     all(test, feature = "_async"),
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 use crate::error::TransportErrorKind;
 
@@ -30,7 +32,8 @@ pub(crate) fn is_timeout_io_error(error: &io::Error) -> bool {
 #[cfg(any(
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 pub(crate) fn classify_transport_error(
     error: &hyper_util::client::legacy::Error,
@@ -53,7 +56,8 @@ pub(crate) fn classify_transport_error(
     all(test, feature = "_async"),
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 fn classify_transport_error_source_chain(
     error: &(dyn std::error::Error + 'static),
@@ -76,7 +80,8 @@ fn classify_transport_error_source_chain(
     all(test, feature = "_async"),
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 fn classify_transport_error_source(
     error: &(dyn std::error::Error + 'static),
@@ -110,7 +115,8 @@ fn classify_transport_error_source(
     all(test, feature = "_async"),
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 pub(crate) fn classify_io_transport_error_kind(
     kind: io::ErrorKind,
@@ -141,7 +147,8 @@ pub(crate) fn classify_io_transport_error_kind(
     all(test, feature = "_async"),
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 fn classify_transport_error_text(text: &str, is_connect_path: bool) -> TransportErrorKind {
     const DNS_MARKERS: &[&str] = &[
@@ -221,7 +228,8 @@ fn classify_transport_error_text(text: &str, is_connect_path: bool) -> Transport
     all(test, feature = "_async"),
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 fn contains_marker(text: &str, markers: &[&str]) -> bool {
     markers.iter().any(|marker| text.contains(marker))
@@ -231,7 +239,8 @@ fn contains_marker(text: &str, markers: &[&str]) -> bool {
     all(test, feature = "_async"),
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 fn contains_word(text: &str, word: &str) -> bool {
     text.split(|character: char| !character.is_ascii_alphanumeric())
@@ -263,6 +272,7 @@ pub(crate) fn is_tls_error(error: &(dyn std::error::Error + 'static)) -> bool {
         #[cfg(any(
             feature = "async-tls-rustls-ring",
             feature = "async-tls-rustls-aws-lc-rs",
+            feature = "async-tls-rustls-no-provider",
             feature = "blocking-tls-rustls-ring",
             feature = "blocking-tls-rustls-aws-lc-rs"
         ))]

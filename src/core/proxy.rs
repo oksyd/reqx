@@ -3,7 +3,8 @@
         feature = "_async",
         not(feature = "async-tls-native"),
         not(feature = "async-tls-rustls-ring"),
-        not(feature = "async-tls-rustls-aws-lc-rs")
+        not(feature = "async-tls-rustls-aws-lc-rs"),
+        not(feature = "async-tls-rustls-no-provider")
     ),
     allow(dead_code)
 )]

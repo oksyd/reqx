@@ -5,6 +5,7 @@ use std::fmt;
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
     feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider",
     feature = "blocking-tls-native",
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs"
@@ -19,6 +20,11 @@ pub enum TlsBackend {
     RustlsRing,
     /// `rustls` backed by the `aws-lc-rs` crypto provider.
     RustlsAwsLcRs,
+    /// `rustls` backed by a crypto provider installed by the caller as the
+    /// process-wide default (via `rustls::crypto::CryptoProvider::install_default`),
+    /// e.g. the pure-Rust `rustls-graviola` provider, instead of a provider
+    /// hard-selected by this crate.
+    RustlsNoProvider,
     /// The platform-native TLS stack exposed by `native-tls`.
     NativeTls,
 }
@@ -29,6 +35,7 @@ impl TlsBackend {
         match self {
             Self::RustlsRing => "rustls-ring",
             Self::RustlsAwsLcRs => "rustls-aws-lc-rs",
+            Self::RustlsNoProvider => "rustls-no-provider",
             Self::NativeTls => "native-tls",
         }
     }
@@ -159,6 +166,7 @@ impl fmt::Debug for TlsOptions {
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
     feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider",
     feature = "blocking-tls-native",
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs"
@@ -170,7 +178,8 @@ pub(crate) struct TlsVersionBounds {
 
 #[cfg(any(
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 impl TlsVersionBounds {
     pub(crate) fn contains(self, version: TlsVersion) -> bool {
@@ -183,6 +192,7 @@ impl TlsVersionBounds {
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
     feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider",
     feature = "blocking-tls-native",
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs"
@@ -215,6 +225,7 @@ pub(crate) fn tls_version_bounds(
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
     feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider",
     feature = "blocking-tls-native",
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs"
@@ -231,6 +242,7 @@ pub(crate) fn tls_config_error(backend: TlsBackend, message: impl Into<String>) 
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
     feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider",
     feature = "blocking-tls-native",
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs"
@@ -249,6 +261,7 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
     feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider",
     feature = "blocking-tls-native",
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs"
@@ -262,6 +275,7 @@ fn contains_pem_marker(haystack: &[u8], marker: &[u8]) -> bool {
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
     feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider",
     feature = "blocking-tls-native",
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs"
@@ -275,6 +289,7 @@ fn is_pem_outer_padding(value: &[u8]) -> bool {
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
     feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider",
     feature = "blocking-tls-native",
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs"

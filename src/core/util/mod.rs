@@ -50,7 +50,8 @@ pub(crate) use timing::{duration_from_millis_saturating, saturating_u64_to_usize
 #[cfg(any(
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 pub(crate) use transport_error::classify_transport_error;
 #[cfg(feature = "_blocking")]

@@ -1,6 +1,7 @@
 #[cfg(any(
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,24 +10,28 @@ use http::{Request, Response as HttpResponse};
 use hyper::body::Incoming;
 #[cfg(any(
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 use hyper_rustls::HttpsConnectorBuilder;
 #[cfg(any(
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 use hyper_util::client::legacy::Client as HyperClient;
 #[cfg(any(
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 use hyper_util::rt::TokioExecutor;
 #[cfg(any(
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 use tracing::warn;
 
@@ -35,7 +40,8 @@ use crate::error::Error;
 #[cfg(any(
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 use crate::error::transport_error;
 use crate::execution::RequestExecutionState;
@@ -43,26 +49,30 @@ use crate::proxy::ProxyConnector;
 #[cfg(any(
     feature = "async-tls-rustls-ring",
     feature = "async-tls-rustls-aws-lc-rs",
-    feature = "async-tls-native"
+    feature = "async-tls-native",
+    feature = "async-tls-rustls-no-provider"
 ))]
 use crate::tls::tls_config_error;
 use crate::tls::{TlsBackend, TlsOptions};
 #[cfg(any(
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 use crate::tls::{TlsClientIdentity, TlsRootCertificate, TlsRootStore, TlsVersion};
 #[cfg(any(
     feature = "async-tls-rustls-ring",
     feature = "async-tls-rustls-aws-lc-rs",
-    feature = "async-tls-native"
+    feature = "async-tls-native",
+    feature = "async-tls-rustls-no-provider"
 ))]
 use crate::tls::{parse_pem_certificate_blocks, tls_version_bounds};
 #[cfg(any(
     feature = "async-tls-rustls-ring",
     feature = "async-tls-rustls-aws-lc-rs",
-    feature = "async-tls-native"
+    feature = "async-tls-native",
+    feature = "async-tls-rustls-no-provider"
 ))]
 use crate::util::classify_transport_error;
 use crate::util::duration_millis_ceil;
@@ -80,10 +90,18 @@ const DEFAULT_TLS_BACKEND: TlsBackend = TlsBackend::RustlsAwsLcRs;
     feature = "async-tls-native"
 ))]
 const DEFAULT_TLS_BACKEND: TlsBackend = TlsBackend::NativeTls;
+#[cfg(all(
+    not(feature = "async-tls-rustls-ring"),
+    not(feature = "async-tls-rustls-aws-lc-rs"),
+    not(feature = "async-tls-native"),
+    feature = "async-tls-rustls-no-provider"
+))]
+const DEFAULT_TLS_BACKEND: TlsBackend = TlsBackend::RustlsNoProvider;
 #[cfg(not(any(
     feature = "async-tls-rustls-ring",
     feature = "async-tls-rustls-aws-lc-rs",
-    feature = "async-tls-native"
+    feature = "async-tls-native",
+    feature = "async-tls-rustls-no-provider"
 )))]
 const DEFAULT_TLS_BACKEND: TlsBackend = TlsBackend::RustlsRing;
 
@@ -93,7 +111,8 @@ pub(super) fn default_tls_backend() -> TlsBackend {
 
 #[cfg(any(
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 fn add_custom_rustls_root_certificates(
     tls_backend: TlsBackend,
@@ -145,7 +164,8 @@ fn add_custom_rustls_root_certificates(
 
 #[cfg(any(
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 fn build_rustls_root_store(
     tls_backend: TlsBackend,
@@ -214,7 +234,8 @@ fn build_rustls_root_store(
 
 #[cfg(any(
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 pub(crate) fn configured_rustls_protocol_versions(
     tls_backend: TlsBackend,
@@ -237,7 +258,8 @@ pub(crate) fn configured_rustls_protocol_versions(
 
 #[cfg(any(
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 fn build_rustls_tls_config(
     tls_backend: TlsBackend,
@@ -310,12 +332,14 @@ fn build_rustls_tls_config(
 
 #[cfg(any(
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 type RustlsHttpsConnector = hyper_rustls::HttpsConnector<ProxyConnector>;
 #[cfg(any(
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-no-provider"
 ))]
 type RustlsHyperClient = HyperClient<RustlsHttpsConnector, ReqBody>;
 
@@ -328,7 +352,8 @@ type NativeHyperClient = HyperClient<NativeHttpsConnector, ReqBody>;
 pub(super) enum TransportClient {
     #[cfg(any(
         feature = "async-tls-rustls-ring",
-        feature = "async-tls-rustls-aws-lc-rs"
+        feature = "async-tls-rustls-aws-lc-rs",
+        feature = "async-tls-rustls-no-provider"
     ))]
     Rustls(RustlsHyperClient),
     #[cfg(feature = "async-tls-native")]
@@ -343,13 +368,15 @@ impl TransportClient {
         #[cfg(any(
             feature = "async-tls-native",
             feature = "async-tls-rustls-ring",
-            feature = "async-tls-rustls-aws-lc-rs"
+            feature = "async-tls-rustls-aws-lc-rs",
+            feature = "async-tls-rustls-no-provider"
         ))]
         {
             match self {
                 #[cfg(any(
                     feature = "async-tls-rustls-ring",
-                    feature = "async-tls-rustls-aws-lc-rs"
+                    feature = "async-tls-rustls-aws-lc-rs",
+                    feature = "async-tls-rustls-no-provider"
                 ))]
                 Self::Rustls(client) => client
                     .request(request)
@@ -365,7 +392,8 @@ impl TransportClient {
         #[cfg(not(any(
             feature = "async-tls-native",
             feature = "async-tls-rustls-ring",
-            feature = "async-tls-rustls-aws-lc-rs"
+            feature = "async-tls-rustls-aws-lc-rs",
+            feature = "async-tls-rustls-no-provider"
         )))]
         {
             let _ = self;
@@ -381,14 +409,16 @@ pub(super) enum TransportRequestError {
     #[cfg(any(
         feature = "async-tls-rustls-ring",
         feature = "async-tls-rustls-aws-lc-rs",
-        feature = "async-tls-native"
+        feature = "async-tls-native",
+        feature = "async-tls-rustls-no-provider"
     ))]
     Transport(hyper_util::client::legacy::Error),
     Timeout,
     #[cfg(not(any(
         feature = "async-tls-rustls-ring",
         feature = "async-tls-rustls-aws-lc-rs",
-        feature = "async-tls-native"
+        feature = "async-tls-native",
+        feature = "async-tls-rustls-no-provider"
     )))]
     TlsBackendUnavailable {
         backend: &'static str,
@@ -405,7 +435,8 @@ impl TransportRequestError {
             #[cfg(any(
                 feature = "async-tls-rustls-ring",
                 feature = "async-tls-rustls-aws-lc-rs",
-                feature = "async-tls-native"
+                feature = "async-tls-native",
+                feature = "async-tls-rustls-no-provider"
             ))]
             Self::Transport(source) => transport_error(
                 classify_transport_error(&source),
@@ -419,7 +450,8 @@ impl TransportRequestError {
             #[cfg(not(any(
                 feature = "async-tls-rustls-ring",
                 feature = "async-tls-rustls-aws-lc-rs",
-                feature = "async-tls-native"
+                feature = "async-tls-native",
+                feature = "async-tls-rustls-no-provider"
             )))]
             Self::TlsBackendUnavailable { backend } => Error::TlsBackendUnavailable { backend },
         }
@@ -503,6 +535,52 @@ fn build_rustls_aws_lc_rs_transport(
 ) -> crate::Result<TransportClient> {
     Err(Error::TlsBackendUnavailable {
         backend: TlsBackend::RustlsAwsLcRs.as_str(),
+    })
+}
+
+#[cfg(feature = "async-tls-rustls-no-provider")]
+fn build_rustls_no_provider_transport(
+    connector: ProxyConnector,
+    tls_options: &TlsOptions,
+    pool_idle_timeout: Duration,
+    pool_max_idle_per_host: usize,
+    http2_only: bool,
+) -> crate::Result<TransportClient> {
+    let provider = rustls::crypto::CryptoProvider::get_default()
+        .cloned()
+        .ok_or_else(|| Error::TlsBackendInit {
+            backend: TlsBackend::RustlsNoProvider.as_str(),
+            message: "no rustls CryptoProvider is installed as the process-wide default; \
+                install one (e.g. rustls-graviola) via \
+                rustls::crypto::CryptoProvider::install_default(...) before building a client \
+                with the async-tls-rustls-no-provider backend"
+                .to_string(),
+        })?;
+    let tls_config = build_rustls_tls_config(TlsBackend::RustlsNoProvider, provider, tls_options)?;
+    let https = HttpsConnectorBuilder::new()
+        .with_tls_config(tls_config)
+        .https_or_http()
+        .enable_http1()
+        .enable_http2()
+        .wrap_connector(connector);
+    let transport = HyperClient::builder(TokioExecutor::new())
+        .pool_idle_timeout(pool_idle_timeout)
+        .pool_max_idle_per_host(pool_max_idle_per_host)
+        .http2_only(http2_only)
+        .build(https);
+    Ok(TransportClient::Rustls(transport))
+}
+
+#[cfg(not(feature = "async-tls-rustls-no-provider"))]
+fn build_rustls_no_provider_transport(
+    _connector: ProxyConnector,
+    _tls_options: &TlsOptions,
+    _pool_idle_timeout: Duration,
+    _pool_max_idle_per_host: usize,
+    _http2_only: bool,
+) -> crate::Result<TransportClient> {
+    Err(Error::TlsBackendUnavailable {
+        backend: TlsBackend::RustlsNoProvider.as_str(),
     })
 }
 
@@ -696,6 +774,13 @@ pub(super) fn build_transport_client(
             http2_only,
         ),
         TlsBackend::RustlsAwsLcRs => build_rustls_aws_lc_rs_transport(
+            connector,
+            tls_options,
+            pool_idle_timeout,
+            pool_max_idle_per_host,
+            http2_only,
+        ),
+        TlsBackend::RustlsNoProvider => build_rustls_no_provider_transport(
             connector,
             tls_options,
             pool_idle_timeout,
