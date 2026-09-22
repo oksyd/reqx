@@ -7,16 +7,17 @@ use http::{HeaderMap, StatusCode};
 use serde::de::DeserializeOwned;
 
 use crate::blocking_client::limiters::{GlobalRequestPermit, HostRequestPermit};
-use crate::content_encoding::{
+use crate::blocking_client::transport::is_timeout_io_error;
+use crate::core::content_encoding::{
     decode_content_encoded_body_limited, should_decode_content_encoded_body,
 };
-use crate::error::{Error, TimeoutPhase};
-use crate::util::{duration_from_millis_saturating, is_timeout_io_error, saturating_u64_to_usize};
+use crate::core::error::{Error, TimeoutPhase};
+use crate::core::util::{duration_from_millis_saturating, saturating_u64_to_usize};
 
-use super::{
-    Response, StreamCompletion, StreamLifecycle, deadline_elapsed, deadline_limits_wait,
-    deadline_within_slack,
-};
+use crate::core::execution::lifecycle::{self, StreamLifecycle};
+use crate::core::metrics::StreamCompletion;
+
+use super::{Response, deadline_elapsed, deadline_limits_wait, deadline_within_slack};
 
 fn map_read_error(
     source: std::io::Error,
@@ -131,7 +132,7 @@ impl BlockingResponseStream {
     }
 
     pub(crate) fn attach_completion(&mut self, completion: StreamCompletion) {
-        super::attach_completion(&mut self.lifecycle, completion);
+        lifecycle::attach_completion(&mut self.lifecycle, completion);
     }
 
     /// Returns the HTTP status code.
@@ -271,31 +272,24 @@ impl BlockingResponseStream {
         self.read_chunk_internal(buffer, true)
     }
 
-    fn write_chunk<W>(&mut self, writer: &mut W, chunk: &[u8]) -> crate::Result<()>
-    where
-        W: Write + ?Sized,
-    {
-        if let Err(source) = writer.write_all(chunk) {
-            let error = self.write_error(source);
-            self.complete_error(&error);
-            return Err(error);
+    fn write_with_deadline(
+        &mut self,
+        operation: impl FnOnce() -> std::io::Result<()>,
+    ) -> crate::Result<()> {
+        let result = self
+            .ensure_within_deadline()
+            .and_then(|()| operation().map_err(|source| self.write_error(source)))
+            .and_then(|()| self.ensure_within_deadline());
+        if let Err(error) = &result {
+            self.complete_error(error);
         }
-        Ok(())
-    }
-
-    fn flush_writer<W>(&mut self, writer: &mut W) -> crate::Result<()>
-    where
-        W: Write + ?Sized,
-    {
-        if let Err(source) = writer.flush() {
-            let error = self.write_error(source);
-            self.complete_error(&error);
-            return Err(error);
-        }
-        Ok(())
+        result
     }
 
     /// Copies the streamed body into `writer`.
+    ///
+    /// Blocking writer operations cannot be interrupted. The total deadline is
+    /// checked before and after each write and flush.
     ///
     /// See also `examples/blocking_streaming.rs`.
     pub fn copy_to_writer<W>(mut self, writer: &mut W) -> crate::Result<u64>
@@ -309,15 +303,17 @@ impl BlockingResponseStream {
             if read == 0 {
                 break;
             }
-            self.write_chunk(writer, &chunk[..read])?;
+            self.write_with_deadline(|| writer.write_all(&chunk[..read]))?;
             copied = copied.saturating_add(read as u64);
         }
-        self.flush_writer(writer)?;
+        self.write_with_deadline(|| writer.flush())?;
         self.complete_success();
         Ok(copied)
     }
 
     /// Copies the streamed body into `writer`, enforcing `max_bytes`.
+    ///
+    /// Deadline handling is the same as [`Self::copy_to_writer`].
     pub fn copy_to_writer_limited<W>(
         mut self,
         writer: &mut W,
@@ -340,9 +336,9 @@ impl BlockingResponseStream {
                 self.complete_error(&error);
                 return Err(error);
             }
-            self.write_chunk(writer, &chunk[..read])?;
+            self.write_with_deadline(|| writer.write_all(&chunk[..read]))?;
         }
-        self.flush_writer(writer)?;
+        self.write_with_deadline(|| writer.flush())?;
         self.complete_success();
         Ok(copied)
     }
@@ -451,12 +447,12 @@ impl BlockingResponseStream {
 
     fn complete_success(&mut self) {
         self.release_transport();
-        super::complete_success(&mut self.lifecycle);
+        lifecycle::complete_success(&mut self.lifecycle);
     }
 
     fn complete_error(&mut self, error: &Error) {
         self.release_transport();
-        super::complete_error(&mut self.lifecycle, error);
+        lifecycle::complete_error(&mut self.lifecycle, error);
     }
 }
 
@@ -483,3 +479,6 @@ impl Read for BlockingResponseStream {
             .map_err(super::into_stream_read_io_error)
     }
 }
+
+#[cfg(test)]
+mod contract_tests;

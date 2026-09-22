@@ -168,29 +168,17 @@ mod tls;
 mod upload;
 
 #[cfg(feature = "_async")]
-pub(crate) use crate::async_client::body;
-#[cfg(feature = "_async")]
-pub(crate) use crate::async_client::client;
-#[cfg(feature = "_async")]
-pub(crate) use crate::async_client::limiters;
-#[cfg(feature = "_async")]
-pub(crate) use crate::async_client::request;
-pub(crate) use crate::core::config;
-pub(crate) use crate::core::content_encoding;
-pub(crate) use crate::core::error;
-#[cfg(any(feature = "_async", feature = "_blocking"))]
-pub(crate) use crate::core::execution;
-pub(crate) use crate::core::extensions;
-pub(crate) use crate::core::metrics;
-pub(crate) use crate::core::observe;
-pub(crate) use crate::core::otel;
-pub(crate) use crate::core::policy;
-#[cfg(any(feature = "_async", feature = "_blocking"))]
-pub(crate) use crate::core::proxy;
-pub(crate) use crate::core::retry;
-pub(crate) use crate::core::util;
-pub(crate) use crate::http::response;
-
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(
+        feature = "async-tls-rustls-ring",
+        feature = "async-tls-rustls-aws-lc-rs",
+        feature = "async-tls-native"
+    )))
+)]
+pub use crate::async_client::{Client, ClientBuilder, RequestBuilder};
+pub use crate::core::error::{Error, ErrorCode, TimeoutPhase, TransportErrorKind};
+pub use crate::http::response::Response;
 #[cfg(feature = "_async")]
 #[cfg_attr(
     docsrs,
@@ -200,29 +188,7 @@ pub(crate) use crate::http::response;
         feature = "async-tls-native"
     )))
 )]
-pub use crate::client::{Client, ClientBuilder};
-pub use crate::error::{Error, ErrorCode, TimeoutPhase, TransportErrorKind};
-#[cfg(feature = "_async")]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(any(
-        feature = "async-tls-rustls-ring",
-        feature = "async-tls-rustls-aws-lc-rs",
-        feature = "async-tls-native"
-    )))
-)]
-pub use crate::request::RequestBuilder;
-pub use crate::response::Response;
-#[cfg(feature = "_async")]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(any(
-        feature = "async-tls-rustls-ring",
-        feature = "async-tls-rustls-aws-lc-rs",
-        feature = "async-tls-native"
-    )))
-)]
-pub use crate::response::ResponseStream;
+pub use crate::http::response::ResponseStream;
 pub use crate::tls::{TlsBackend, TlsRootStore, TlsVersion};
 
 #[cfg(feature = "_blocking")]
@@ -240,7 +206,7 @@ pub use crate::tls::{TlsBackend, TlsRootStore, TlsVersion};
 /// same behavior, but uses synchronous request execution and response streams.
 pub mod blocking {
     pub use crate::blocking_client::{Client, ClientBuilder, RequestBuilder};
-    pub use crate::response::BlockingResponseStream as ResponseStream;
+    pub use crate::http::response::BlockingResponseStream as ResponseStream;
 }
 
 /// Convenient result alias used by `reqx` APIs.
@@ -249,6 +215,16 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Recommended imports for most SDK transport code.
 pub mod prelude {
     pub use crate::Result;
+    #[cfg(feature = "_async")]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(any(
+            feature = "async-tls-rustls-ring",
+            feature = "async-tls-rustls-aws-lc-rs",
+            feature = "async-tls-native"
+        )))
+    )]
+    pub use crate::async_client::Client;
     #[cfg(feature = "_blocking")]
     #[cfg_attr(
         docsrs,
@@ -259,6 +235,10 @@ pub mod prelude {
         )))
     )]
     pub use crate::blocking;
+    pub use crate::core::error::{Error, ErrorCode};
+    pub use crate::core::policy::{RedirectPolicy, StatusPolicy};
+    pub use crate::core::retry::RetryPolicy;
+    pub use crate::http::response::Response;
     #[cfg(feature = "_async")]
     #[cfg_attr(
         docsrs,
@@ -268,29 +248,15 @@ pub mod prelude {
             feature = "async-tls-native"
         )))
     )]
-    pub use crate::client::Client;
-    pub use crate::error::{Error, ErrorCode};
-    pub use crate::policy::{RedirectPolicy, StatusPolicy};
-    pub use crate::response::Response;
-    #[cfg(feature = "_async")]
-    #[cfg_attr(
-        docsrs,
-        doc(cfg(any(
-            feature = "async-tls-rustls-ring",
-            feature = "async-tls-rustls-aws-lc-rs",
-            feature = "async-tls-native"
-        )))
-    )]
-    pub use crate::response::ResponseStream;
-    pub use crate::retry::RetryPolicy;
+    pub use crate::http::response::ResponseStream;
     pub use crate::tls::{TlsBackend, TlsRootStore, TlsVersion};
 }
 
 /// Advanced transport controls and extensibility points.
 pub mod advanced {
-    pub use crate::config::ClientProfile;
-    pub use crate::error::{TimeoutPhase, TransportErrorKind};
-    pub use crate::extensions::{
+    pub use crate::core::config::ClientProfile;
+    pub use crate::core::error::{TimeoutPhase, TransportErrorKind};
+    pub use crate::core::extensions::{
         BackoffSource, BodyCodec, Clock, EndpointSelector, OtelPathNormalizer, PolicyBackoffSource,
         PrimaryEndpointSelector, RoundRobinEndpointSelector, StandardBodyCodec,
         StandardOtelPathNormalizer, SystemClock,
@@ -316,21 +282,18 @@ pub mod advanced {
         ResumableUploadOptions, ResumableUploadResult, UploadedPart,
     };
     pub use crate::{
-        metrics::{
+        core::metrics::{
             ErrorMetrics, LatencyMetrics, MetricsSnapshot, RequestMetrics, ResponseMetrics,
             TimeoutMetrics,
         },
-        observe::Observer,
-        policy::{Interceptor, RedirectPolicy, RequestContext, StatusPolicy},
-        rate_limit::{RateLimitPolicy, ServerThrottleScope},
-        resilience::{AdaptiveConcurrencyPolicy, CircuitBreakerPolicy, RetryBudgetPolicy},
-        retry::{
+        core::observe::Observer,
+        core::policy::{Interceptor, RedirectPolicy, RequestContext, StatusPolicy},
+        core::retry::{
             PermissiveRetryEligibility, RetryClassifier, RetryDecision, RetryEligibility,
             RetryReason, StrictRetryEligibility,
         },
+        rate_limit::{RateLimitPolicy, ServerThrottleScope},
+        resilience::{AdaptiveConcurrencyPolicy, CircuitBreakerPolicy, RetryBudgetPolicy},
         tls::{TlsBackend, TlsRootStore, TlsVersion},
     };
 }
-
-#[cfg(all(test, feature = "_async"))]
-mod tests;

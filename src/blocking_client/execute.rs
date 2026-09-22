@@ -4,38 +4,37 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use http::{HeaderMap, Method, Uri};
 
-use crate::content_encoding::should_decode_content_encoded_body;
-use crate::core::request_builder::{RequestExecutionDefaults, RequestExecutionOptions};
-use crate::error::{Error, TimeoutPhase, TransportErrorKind, transport_error};
-use crate::execution::{
+use crate::core::content_encoding::should_decode_content_encoded_body;
+use crate::core::error::{Error, TimeoutPhase, TransportErrorKind, transport_error};
+use crate::core::execution::lifecycle::StreamLifecycle;
+use crate::core::execution::{
     AttemptGuards, BodyReadFailure, BodyReadOutcome, BodyReadRetryContext, RequestCompletion,
     RequestExecutionPreparation, RequestExecutionState, RequestExecutionStateInput, ResponseMode,
     ResponseProgress, RetryAttemptState, RetryRequestInput, RetrySchedule, TransportFailurePlan,
     prepare_retry_request_input, server_throttle_delay,
 };
-use crate::extensions::decode_response_body_with_codec_limited;
-use crate::metrics::MetricsSnapshot;
-use crate::policy::{RequestContext, StatusPolicy};
+use crate::core::extensions::decode_response_body_with_codec_limited;
+use crate::core::metrics::MetricsSnapshot;
+use crate::core::policy::{RequestContext, StatusPolicy};
+use crate::core::request_builder::{RequestExecutionDefaults, RequestExecutionOptions};
+use crate::core::retry::RetryDecision;
+use crate::core::util::{
+    bounded_retry_delay, deadline_exceeded_error, duration_millis_ceil, ensure_accept_encoding,
+    mark_sensitive_headers, redact_uri_for_logs, total_timeout_deadline,
+    validate_request_framing_headers,
+};
+use crate::http::response::{BlockingResponseStream, BlockingResponseStreamContext, Response};
 use crate::rate_limit::{resolve_server_throttle_scope, server_throttle_scope_from_headers};
-use crate::response::{
-    BlockingResponseStream, BlockingResponseStreamContext, Response, StreamLifecycle,
-};
-use crate::retry::RetryDecision;
 use crate::tls::TlsBackend;
-use crate::util::{
-    bounded_retry_delay, deadline_exceeded_error, duration_millis_ceil,
-    ensure_accept_encoding_blocking, is_timeout_io_error, mark_sensitive_headers,
-    redact_uri_for_logs, total_timeout_deadline, validate_request_framing_headers,
-};
 
 use super::limiters::{AcquirePermitError, GlobalRequestPermit, HostRequestPermit};
 use super::transport::{
-    ReadBodyError, classify_ureq_transport_error, is_proxy_bypassed, read_all_body_limited,
-    remove_content_encoding_headers,
+    ReadBodyError, classify_ureq_transport_error, is_proxy_bypassed, is_timeout_io_error,
+    read_all_body_limited, remove_content_encoding_headers,
 };
 use super::{AdaptiveConcurrencyPermit, Client, ClientBuilder, RequestBody, RequestBuilder};
 
-impl crate::execution::AttemptOutcome for AdaptiveConcurrencyPermit {
+impl crate::core::execution::AttemptOutcome for AdaptiveConcurrencyPermit {
     fn mark_success(self) {
         Self::mark_success(self);
     }
@@ -600,7 +599,7 @@ impl Client {
                     builder = builder.header(name, value);
                 }
                 let request = builder
-                    .body(body.to_vec())
+                    .body(body.as_ref())
                     .map_err(|source| Error::RequestBuild { source })?;
                 self.run_configured_request(
                     agent,
@@ -715,7 +714,7 @@ impl Client {
                 },
             },
             RequestBody::empty,
-            ensure_accept_encoding_blocking,
+            ensure_accept_encoding,
         )?;
         let redacted_uri_text = request_input.redacted_uri_text.clone();
         let method = request_input.method.clone();
@@ -745,8 +744,10 @@ impl Client {
 
         let result = self.send_request_with_retry(request_input, request_started_at);
 
-        self.metrics
-            .record_request_completed(&result, request_started_at.elapsed());
+        self.metrics.record_request_completed(
+            result.as_ref().map(|response| response.status().as_u16()),
+            request_started_at.elapsed(),
+        );
         match &result {
             Ok(response) => self
                 .metrics
@@ -787,7 +788,7 @@ impl Client {
                 },
             },
             RequestBody::empty,
-            ensure_accept_encoding_blocking,
+            ensure_accept_encoding,
         )?;
         let redacted_uri_text = request_input.redacted_uri_text.clone();
         let method = request_input.method.clone();

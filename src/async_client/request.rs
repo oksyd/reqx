@@ -11,14 +11,14 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::io::ReaderStream;
 
 use crate::IDEMPOTENCY_KEY_HEADER;
-use crate::body::{RequestBody, stream_req_body};
-use crate::client::Client;
+use crate::async_client::Client;
+use crate::async_client::body::{RequestBody, stream_req_body};
+use crate::core::policy::{RedirectPolicy, StatusPolicy};
 use crate::core::request_builder::{
     PreparedRequest, RequestExecutionOptions, RequestExecutionOverrides, RequestPreparation,
 };
-use crate::policy::{RedirectPolicy, StatusPolicy};
-use crate::retry::RetryPolicy;
-use crate::util::{mark_sensitive_header_value, parse_header_name, parse_header_value};
+use crate::core::retry::RetryPolicy;
+use crate::core::util::{mark_sensitive_header_value, parse_header_name, parse_header_value};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ContentLengthSource {
@@ -92,7 +92,7 @@ impl<'a> RequestBuilder<'a> {
         }
     }
 
-    /// Adds a header to this request.
+    /// Sets a request header, replacing any existing value with the same name.
     ///
     /// Request sending rejects explicit `Transfer-Encoding` and malformed or
     /// ambiguous `Content-Length`; body framing is otherwise transport-managed.
@@ -107,7 +107,7 @@ impl<'a> RequestBuilder<'a> {
         self
     }
 
-    /// Parses and adds a header to this request.
+    /// Parses and sets a request header, replacing any existing value with the same name.
     pub fn try_header(self, name: &str, value: &str) -> crate::Result<Self> {
         let name = parse_header_name(name)?;
         let value = parse_header_value(name.as_str(), value)?;
@@ -146,7 +146,7 @@ impl<'a> RequestBuilder<'a> {
         T: Serialize + ?Sized,
     {
         let encoded = serde_urlencoded::to_string(params)
-            .map_err(|source| crate::error::Error::SerializeQuery { source })?;
+            .map_err(|source| crate::core::error::Error::SerializeQuery { source })?;
         self.query_pairs.extend(
             url::form_urlencoded::parse(encoded.as_bytes())
                 .map(|(name, value)| (name.into_owned(), value.into_owned())),
@@ -162,6 +162,9 @@ impl<'a> RequestBuilder<'a> {
     }
 
     /// Sets a streaming request body.
+    ///
+    /// Preserves an explicitly supplied `Content-Length`, but clears a length
+    /// set by an earlier `body_reader_with_length` call.
     pub fn body_stream<S, E>(mut self, stream: S) -> Self
     where
         S: Stream<Item = Result<Bytes, E>> + Send + 'static,
@@ -176,14 +179,15 @@ impl<'a> RequestBuilder<'a> {
 
     /// Streams an async reader as the request body.
     ///
+    /// Preserves an explicitly supplied `Content-Length`, but clears a length
+    /// set by an earlier `body_reader_with_length` call.
+    ///
     /// See also `examples/streaming.rs`.
     pub fn body_reader<R>(self, reader: R) -> Self
     where
         R: AsyncRead + Send + 'static,
     {
-        let mut builder = self;
-        builder.clear_content_length();
-        builder.body_stream(ReaderStream::new(reader))
+        self.body_stream(ReaderStream::new(reader))
     }
 
     /// Streams an async reader as the request body and sets `Content-Length`.
@@ -192,7 +196,7 @@ impl<'a> RequestBuilder<'a> {
         R: AsyncRead + Send + 'static,
     {
         let value = HeaderValue::from_str(&content_length.to_string()).map_err(|source| {
-            crate::error::Error::InvalidHeaderValue {
+            crate::core::error::Error::InvalidHeaderValue {
                 name: CONTENT_LENGTH.as_str().to_owned(),
                 source,
             }
@@ -226,7 +230,7 @@ impl<'a> RequestBuilder<'a> {
         T: Serialize + ?Sized,
     {
         let body = serde_json::to_vec(payload)
-            .map_err(|source| crate::error::Error::SerializeJson { source })?;
+            .map_err(|source| crate::core::error::Error::SerializeJson { source })?;
         let with_body = self.body_bytes(Bytes::from(body));
         Ok(with_body.header(CONTENT_TYPE, HeaderValue::from_static("application/json")))
     }
@@ -237,7 +241,7 @@ impl<'a> RequestBuilder<'a> {
         T: Serialize + ?Sized,
     {
         let encoded = serde_urlencoded::to_string(payload)
-            .map_err(|source| crate::error::Error::SerializeForm { source })?;
+            .map_err(|source| crate::core::error::Error::SerializeForm { source })?;
         let with_body = self.body_bytes(Bytes::from(encoded));
         Ok(with_body.header(
             CONTENT_TYPE,
@@ -313,7 +317,7 @@ impl<'a> RequestBuilder<'a> {
     }
 
     /// Executes the request and applies the effective [`StatusPolicy`].
-    pub async fn send(self) -> crate::Result<crate::response::Response> {
+    pub async fn send(self) -> crate::Result<crate::http::response::Response> {
         let PreparedRequest {
             client,
             method,
@@ -331,7 +335,7 @@ impl<'a> RequestBuilder<'a> {
     ///
     /// Non-success HTTP statuses still follow the effective [`StatusPolicy`].
     /// See also `examples/streaming.rs`.
-    pub async fn send_stream(self) -> crate::Result<crate::response::ResponseStream> {
+    pub async fn send_stream(self) -> crate::Result<crate::http::response::ResponseStream> {
         let PreparedRequest {
             client,
             method,
@@ -383,7 +387,7 @@ impl<'a> RequestBuilder<'a> {
 
     /// Executes the request and always returns a buffered [`crate::Response`]
     /// for HTTP status responses.
-    pub async fn send_response(self) -> crate::Result<crate::response::Response> {
+    pub async fn send_response(self) -> crate::Result<crate::http::response::Response> {
         let PreparedRequest {
             client,
             method,
@@ -399,7 +403,9 @@ impl<'a> RequestBuilder<'a> {
 
     /// Executes the request and always returns a streaming response for
     /// HTTP status responses.
-    pub async fn send_response_stream(self) -> crate::Result<crate::response::ResponseStream> {
+    pub async fn send_response_stream(
+        self,
+    ) -> crate::Result<crate::http::response::ResponseStream> {
         let PreparedRequest {
             client,
             method,
@@ -413,3 +419,6 @@ impl<'a> RequestBuilder<'a> {
             .await
     }
 }
+
+#[cfg(test)]
+mod contract_tests;

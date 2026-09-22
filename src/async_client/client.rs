@@ -7,42 +7,41 @@ use hyper::body::Incoming;
 use tokio::time::{sleep, timeout, timeout_at};
 use tracing::{Instrument, debug, info_span, warn};
 
-use crate::body::{
+use crate::async_client::body::{
     ReadBodyError, ReqBody, RequestBody, buffered_req_body, build_http_request, empty_req_body,
     read_all_body_limited,
 };
-use crate::content_encoding::should_decode_content_encoded_body;
-use crate::core::request_builder::{RequestExecutionDefaults, RequestExecutionOptions};
-use crate::error::{Error, TransportErrorKind, transport_error};
-use crate::execution::{
+use crate::async_client::limiters::{GlobalRequestPermit, HostRequestPermit};
+use crate::async_client::request::RequestBuilder;
+use crate::core::content_encoding::should_decode_content_encoded_body;
+use crate::core::error::{Error, TransportErrorKind, transport_error};
+use crate::core::execution::lifecycle::StreamLifecycle;
+use crate::core::execution::{
     AttemptGuards, BodyReadFailure, BodyReadOutcome, BodyReadRetryContext, RequestCompletion,
     RequestExecutionPreparation, RequestExecutionState, RequestExecutionStateInput, ResponseMode,
     ResponseProgress, RetryAttemptState, RetryRequestInput, RetrySchedule, TransportFailurePlan,
     prepare_retry_request_input, server_throttle_delay,
 };
-use crate::extensions::decode_response_body_with_codec_limited;
-use crate::limiters::{GlobalRequestPermit, HostRequestPermit};
-use crate::metrics::MetricsSnapshot;
-use crate::policy::{RequestContext, StatusPolicy};
-use crate::proxy::should_bypass_proxy_uri;
+use crate::core::extensions::decode_response_body_with_codec_limited;
+use crate::core::metrics::MetricsSnapshot;
+use crate::core::policy::{RequestContext, StatusPolicy};
+use crate::core::proxy::should_bypass_proxy_uri;
+use crate::core::request_builder::{RequestExecutionDefaults, RequestExecutionOptions};
+use crate::core::retry::{RetryDecision, RetryReason};
+use crate::core::util::{
+    bounded_retry_delay, deadline_exceeded_error, duration_millis_ceil,
+    duration_millis_u64_saturating, ensure_accept_encoding, mark_sensitive_headers,
+    total_timeout_deadline, validate_request_framing_headers,
+};
+use crate::http::response::{Response, ResponseStream, ResponseStreamContext, StreamPermits};
 use crate::rate_limit::{
     ServerThrottleScope, resolve_server_throttle_scope, server_throttle_scope_from_headers,
 };
-use crate::request::RequestBuilder;
-use crate::response::{
-    Response, ResponseStream, ResponseStreamContext, StreamLifecycle, StreamPermits,
-};
-use crate::retry::{RetryDecision, RetryReason};
 use crate::tls::TlsBackend;
-use crate::util::{
-    bounded_retry_delay, deadline_exceeded_error, duration_millis_ceil,
-    duration_millis_u64_saturating, ensure_accept_encoding_async, mark_sensitive_headers,
-    total_timeout_deadline, validate_request_framing_headers,
-};
 
 use super::adaptive::AdaptiveConcurrencyPermit;
 use super::transport::TransportRequestError;
-pub use super::{Client, ClientBuilder};
+use super::{Client, ClientBuilder};
 
 enum RetryResponse {
     Buffered(Response),
@@ -701,7 +700,7 @@ impl Client {
                 },
             },
             RequestBody::empty,
-            ensure_accept_encoding_async,
+            ensure_accept_encoding,
         )?;
         let redacted_uri_text = request_input.redacted_uri_text.clone();
         let method = request_input.method.clone();
@@ -765,7 +764,7 @@ impl Client {
                 },
             },
             RequestBody::empty,
-            ensure_accept_encoding_async,
+            ensure_accept_encoding,
         )?;
         let redacted_uri_text = request_input.redacted_uri_text.clone();
         let method = request_input.method.clone();

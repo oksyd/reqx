@@ -30,16 +30,23 @@ use hyper_util::rt::TokioExecutor;
 ))]
 use tracing::warn;
 
-use crate::body::ReqBody;
-use crate::error::Error;
+use super::proxy::ProxyConnector;
+#[cfg(any(
+    feature = "async-tls-rustls-ring",
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-native"
+))]
+use super::transport_error::classify_transport_error;
+use crate::async_client::body::ReqBody;
+use crate::core::error::Error;
 #[cfg(any(
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
     feature = "async-tls-rustls-aws-lc-rs"
 ))]
-use crate::error::transport_error;
-use crate::execution::RequestExecutionState;
-use crate::proxy::ProxyConnector;
+use crate::core::error::transport_error;
+use crate::core::execution::RequestExecutionState;
+use crate::core::util::duration_millis_ceil;
 #[cfg(any(
     feature = "async-tls-rustls-ring",
     feature = "async-tls-rustls-aws-lc-rs",
@@ -59,13 +66,6 @@ use crate::tls::{TlsClientIdentity, TlsRootCertificate, TlsRootStore, TlsVersion
     feature = "async-tls-native"
 ))]
 use crate::tls::{parse_pem_certificate_blocks, tls_version_bounds};
-#[cfg(any(
-    feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs",
-    feature = "async-tls-native"
-))]
-use crate::util::classify_transport_error;
-use crate::util::duration_millis_ceil;
 
 #[cfg(feature = "async-tls-rustls-ring")]
 const DEFAULT_TLS_BACKEND: TlsBackend = TlsBackend::RustlsRing;
@@ -426,6 +426,37 @@ impl TransportRequestError {
     }
 }
 
+#[cfg(any(
+    feature = "async-tls-rustls-ring",
+    feature = "async-tls-rustls-aws-lc-rs"
+))]
+fn build_rustls_transport(
+    tls_config: rustls::ClientConfig,
+    connector: ProxyConnector,
+    pool_idle_timeout: Duration,
+    pool_max_idle_per_host: usize,
+    http2_only: bool,
+) -> TransportClient {
+    let builder = HttpsConnectorBuilder::new()
+        .with_tls_config(tls_config)
+        .https_or_http();
+    // ALPN must advertise only protocols the HTTP client is configured to speak.
+    let https = if http2_only {
+        builder.enable_http2().wrap_connector(connector)
+    } else {
+        builder
+            .enable_http1()
+            .enable_http2()
+            .wrap_connector(connector)
+    };
+    let transport = HyperClient::builder(TokioExecutor::new())
+        .pool_idle_timeout(pool_idle_timeout)
+        .pool_max_idle_per_host(pool_max_idle_per_host)
+        .http2_only(http2_only)
+        .build(https);
+    TransportClient::Rustls(transport)
+}
+
 #[cfg(feature = "async-tls-rustls-ring")]
 fn build_rustls_ring_transport(
     connector: ProxyConnector,
@@ -439,18 +470,13 @@ fn build_rustls_ring_transport(
         rustls::crypto::ring::default_provider(),
         tls_options,
     )?;
-    let https = HttpsConnectorBuilder::new()
-        .with_tls_config(tls_config)
-        .https_or_http()
-        .enable_http1()
-        .enable_http2()
-        .wrap_connector(connector);
-    let transport = HyperClient::builder(TokioExecutor::new())
-        .pool_idle_timeout(pool_idle_timeout)
-        .pool_max_idle_per_host(pool_max_idle_per_host)
-        .http2_only(http2_only)
-        .build(https);
-    Ok(TransportClient::Rustls(transport))
+    Ok(build_rustls_transport(
+        tls_config,
+        connector,
+        pool_idle_timeout,
+        pool_max_idle_per_host,
+        http2_only,
+    ))
 }
 
 #[cfg(not(feature = "async-tls-rustls-ring"))]
@@ -479,18 +505,13 @@ fn build_rustls_aws_lc_rs_transport(
         rustls::crypto::aws_lc_rs::default_provider(),
         tls_options,
     )?;
-    let https = HttpsConnectorBuilder::new()
-        .with_tls_config(tls_config)
-        .https_or_http()
-        .enable_http1()
-        .enable_http2()
-        .wrap_connector(connector);
-    let transport = HyperClient::builder(TokioExecutor::new())
-        .pool_idle_timeout(pool_idle_timeout)
-        .pool_max_idle_per_host(pool_max_idle_per_host)
-        .http2_only(http2_only)
-        .build(https);
-    Ok(TransportClient::Rustls(transport))
+    Ok(build_rustls_transport(
+        tls_config,
+        connector,
+        pool_idle_timeout,
+        pool_max_idle_per_host,
+        http2_only,
+    ))
 }
 
 #[cfg(not(feature = "async-tls-rustls-aws-lc-rs"))]

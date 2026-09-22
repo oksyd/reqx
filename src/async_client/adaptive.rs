@@ -3,11 +3,11 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Notify;
 
-use crate::extensions::Clock;
+use crate::core::extensions::Clock;
+use crate::core::util::lock_unpoisoned;
 use crate::resilience::{
     AdaptiveConcurrencyOutcome, AdaptiveConcurrencyPolicy, AdaptiveConcurrencyState,
 };
-use crate::util::lock_unpoisoned;
 
 pub(super) struct AdaptiveConcurrencyController {
     policy: AdaptiveConcurrencyPolicy,
@@ -93,7 +93,7 @@ impl AdaptiveConcurrencyPermit {
     }
 }
 
-impl crate::execution::AttemptOutcome for AdaptiveConcurrencyPermit {
+impl crate::core::execution::AttemptOutcome for AdaptiveConcurrencyPermit {
     fn mark_success(self) {
         Self::mark_success(self);
     }
@@ -121,7 +121,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use crate::extensions::SystemClock;
+    use crate::core::extensions::SystemClock;
     use crate::resilience::AdaptiveConcurrencyPolicy;
 
     use super::AdaptiveConcurrencyController;

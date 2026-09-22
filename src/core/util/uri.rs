@@ -1,6 +1,6 @@
 use http::Uri;
 
-use crate::error::Error;
+use crate::core::error::Error;
 
 use super::redaction::{redact_uri_for_logs, redact_uri_without_url_normalization};
 
@@ -299,3 +299,6 @@ pub(crate) fn join_base_path(base_url: &str, path: &str) -> String {
         (false, false) => format!("{base}/{relative}"),
     }
 }
+
+#[cfg(test)]
+mod contract_tests;

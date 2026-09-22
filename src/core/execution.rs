@@ -6,24 +6,27 @@ use bytes::Bytes;
 use http::header::CONTENT_LENGTH;
 use http::{HeaderMap, Method, StatusCode, Uri};
 
+use crate::core::error::{Error, TimeoutPhase, TransportErrorKind};
+#[cfg(any(feature = "_async", feature = "_blocking"))]
+use crate::core::execution::lifecycle::{StreamLifecycle, StreamOutcomeHooks};
+use crate::core::extensions::{BackoffSource, Clock, EndpointSelector};
+use crate::core::policy::{RedirectPolicy, RequestContext, StatusPolicy};
 use crate::core::request_builder::{
     EffectiveRequestExecutionOptions, RequestExecutionDefaults, RequestExecutionOptions,
 };
-use crate::error::{Error, TimeoutPhase, TransportErrorKind};
-use crate::extensions::{BackoffSource, Clock, EndpointSelector};
-use crate::policy::{RedirectPolicy, RequestContext, StatusPolicy};
-#[cfg(any(feature = "_async", feature = "_blocking"))]
-use crate::resilience::RetryBudget;
-#[cfg(any(feature = "_async", feature = "_blocking"))]
-use crate::response::{StreamLifecycle, StreamOutcomeHooks};
-use crate::retry::{RetryDecision, RetryEligibility, RetryPolicy, RetryReason};
-use crate::util::{
+use crate::core::retry::{RetryDecision, RetryEligibility, RetryPolicy, RetryReason};
+use crate::core::util::{
     bounded_retry_delay, deadline_exceeded_error, duration_millis_ceil, is_redirect_status,
     merge_headers, parse_retry_after, parse_retry_after_capped, phase_timeout,
     rate_limit_bucket_key, redact_uri_for_logs, redirect_location, redirect_method,
     resolve_redirect_uri, resolve_uri, same_origin, sanitize_headers_for_redirect,
     total_timeout_deadline, total_timeout_expired, truncate_body, validate_base_url,
 };
+#[cfg(any(feature = "_async", feature = "_blocking"))]
+use crate::resilience::RetryBudget;
+
+#[cfg(any(feature = "_async", feature = "_blocking"))]
+pub(crate) mod lifecycle;
 
 pub(crate) struct RetryRequestInput<Body> {
     pub(crate) method: Method,
@@ -1437,11 +1440,11 @@ mod tests {
         prepare_retry_schedule, server_throttle_delay, status_retry_delay,
         transport_retry_decision,
     };
+    use crate::core::error::{Error, TransportErrorKind, transport_error};
+    use crate::core::extensions::{BackoffSource, PrimaryEndpointSelector, SystemClock};
+    use crate::core::policy::{RedirectPolicy, StatusPolicy};
     use crate::core::request_builder::{RequestExecutionDefaults, RequestExecutionOptions};
-    use crate::error::{Error, TransportErrorKind, transport_error};
-    use crate::extensions::{BackoffSource, PrimaryEndpointSelector, SystemClock};
-    use crate::policy::{RedirectPolicy, StatusPolicy};
-    use crate::retry::{PermissiveRetryEligibility, RetryPolicy, RetryReason};
+    use crate::core::retry::{PermissiveRetryEligibility, RetryPolicy, RetryReason};
 
     struct TestAttempt {
         name: &'static str,
@@ -2455,3 +2458,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod contract_tests;

@@ -5,25 +5,28 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use http::{HeaderMap, Uri};
 
-use crate::extensions::{BackoffSource, BodyCodec, Clock, EndpointSelector, OtelPathNormalizer};
-use crate::metrics::ClientMetrics;
-use crate::observe::Observer;
-use crate::policy::{Interceptor, RedirectPolicy, StatusPolicy};
-use crate::proxy::{NoProxyRule, ProxyConfig};
+use crate::core::extensions::{
+    BackoffSource, BodyCodec, Clock, EndpointSelector, OtelPathNormalizer,
+};
+use crate::core::metrics::ClientMetrics;
+use crate::core::observe::Observer;
+use crate::core::policy::{Interceptor, RedirectPolicy, StatusPolicy};
+use crate::core::proxy::{NoProxyRule, ProxyConfig};
+use crate::core::retry::{RetryEligibility, RetryPolicy};
+use crate::core::util::lock_unpoisoned;
 use crate::rate_limit::{RateLimitPolicy, RateLimiter, ServerThrottleScope};
 use crate::resilience::{
     AdaptiveConcurrencyOutcome, AdaptiveConcurrencyPolicy, AdaptiveConcurrencyState,
     CircuitBreaker, CircuitBreakerPolicy, RetryBudget, RetryBudgetPolicy,
 };
-use crate::retry::{RetryEligibility, RetryPolicy};
 use crate::tls::{TlsBackend, TlsOptions};
-use crate::util::lock_unpoisoned;
 
 mod builder;
+mod dns;
 mod execute;
 pub(crate) mod limiters;
 mod request;
-mod transport;
+pub(crate) mod transport;
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs"

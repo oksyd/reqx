@@ -1,9 +1,7 @@
 use std::io::{self, Read};
 use std::time::Duration;
 
-#[cfg(feature = "_async")]
-use crate::util::read_async_retry_interrupted;
-use crate::util::read_retry_interrupted;
+use crate::core::util::read_retry_interrupted;
 
 use super::{
     LEGACY_RESUMABLE_UPLOAD_CHECKPOINT_VERSION, MAX_RESUMABLE_UPLOAD_PART_NUMBER,
@@ -146,11 +144,17 @@ pub(super) async fn read_chunk_async<R>(reader: &mut R, part_size: usize) -> io:
 where
     R: tokio::io::AsyncRead + Unpin,
 {
+    use tokio::io::AsyncReadExt;
+
     let mut buffer = vec![0_u8; part_size];
     let mut read_len = 0_usize;
 
     while read_len < part_size {
-        let read = read_async_retry_interrupted(reader, &mut buffer[read_len..]).await?;
+        let read = match reader.read(&mut buffer[read_len..]).await {
+            Ok(read) => read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
         if read == 0 {
             break;
         }
@@ -385,7 +389,9 @@ impl<'a> ResumableUploadSession<'a> {
         E: std::error::Error + Send + Sync + 'static,
     {
         if self.total_parts() == 0 {
-            return Err(ResumableUploadError::EmptyUploadBody);
+            return Err(ResumableUploadError::EmptyUploadBody {
+                checkpoint: self.checkpoint.clone(),
+            });
         }
         self.ordered_parts()
     }

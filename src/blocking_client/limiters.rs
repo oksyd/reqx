@@ -4,13 +4,13 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::core::extensions::Clock;
 use crate::core::limiters::{
     PER_HOST_LIMITER_ENTRY_TTL, PER_HOST_LIMITER_MAX_ENTRIES,
     PerHostLimiterEntry as PerHostLimiterEntryState, cleanup_stale_per_host_limiters,
     normalize_concurrency_limit, normalize_optional_concurrency_limit,
 };
-use crate::extensions::Clock;
-use crate::util::{lock_unpoisoned, normalize_host_key};
+use crate::core::util::{lock_unpoisoned, normalize_host_key};
 
 #[derive(Clone)]
 pub(crate) struct RequestLimiters {
@@ -233,9 +233,12 @@ mod tests {
 
     #[test]
     fn acquire_host_normalizes_trailing_dot_fqdn_keys() {
-        let limiters =
-            RequestLimiters::new(None, Some(1), Arc::new(crate::extensions::SystemClock))
-                .expect("limiters should be built");
+        let limiters = RequestLimiters::new(
+            None,
+            Some(1),
+            Arc::new(crate::core::extensions::SystemClock),
+        )
+        .expect("limiters should be built");
 
         let _permit = limiters
             .acquire_host(Some("api.example.com"), None)
@@ -257,9 +260,12 @@ mod tests {
 
     #[test]
     fn zero_limits_are_normalized_to_one_permit() {
-        let limiters =
-            RequestLimiters::new(Some(0), Some(0), Arc::new(crate::extensions::SystemClock))
-                .expect("limiters should be built");
+        let limiters = RequestLimiters::new(
+            Some(0),
+            Some(0),
+            Arc::new(crate::core::extensions::SystemClock),
+        )
+        .expect("limiters should be built");
         let deadline_at = Some(Instant::now() + Duration::from_millis(50));
 
         let _global = limiters

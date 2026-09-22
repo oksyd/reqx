@@ -964,10 +964,69 @@ fn blocking_abort_on_error_aborts_empty_upload_body() {
         .expect_err("empty uploads should fail");
 
     match error {
-        ResumableUploadError::EmptyUploadBody => {}
+        ResumableUploadError::EmptyUploadBody { .. } => {}
         other => panic!("unexpected error variant: {other}"),
     }
 
+    assert_eq!(backend.aborts.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn blocking_empty_upload_preserves_session_for_explicit_cleanup() {
+    let backend = BlockingMockBackend::default();
+    let uploader = BlockingResumableUploader::new(ResumableUploadOptions::new().with_part_size(4));
+    let mut reader = std::io::Cursor::new(Vec::<u8>::new());
+    let error = uploader
+        .upload(&backend, &mut reader)
+        .expect_err("empty uploads should fail");
+
+    assert!(matches!(
+        error,
+        ResumableUploadError::EmptyUploadBody { .. }
+    ));
+    let checkpoint = error
+        .checkpoint()
+        .expect("created session must be recoverable");
+    assert_eq!(checkpoint.upload_id, "upload-1");
+    assert!(checkpoint.completed_parts.is_empty());
+    assert_eq!(backend.create_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(backend.aborts.load(Ordering::SeqCst), 0);
+
+    let checkpoint = error.into_checkpoint().expect("checkpoint should be owned");
+    backend
+        .abort_upload(&checkpoint.upload_id)
+        .expect("explicit cleanup should succeed");
+    assert_eq!(backend.aborts.load(Ordering::SeqCst), 1);
+}
+
+#[cfg(feature = "_async")]
+#[tokio::test]
+async fn async_empty_upload_preserves_session_for_explicit_cleanup() {
+    let backend = AsyncMockBackend::default();
+    let uploader = AsyncResumableUploader::new(ResumableUploadOptions::new().with_part_size(4));
+    let mut reader = std::io::Cursor::new(Vec::<u8>::new());
+    let error = uploader
+        .upload(&backend, &mut reader)
+        .await
+        .expect_err("empty uploads should fail");
+
+    assert!(matches!(
+        error,
+        ResumableUploadError::EmptyUploadBody { .. }
+    ));
+    let checkpoint = error
+        .checkpoint()
+        .expect("created session must be recoverable");
+    assert_eq!(checkpoint.upload_id, "upload-async-1");
+    assert!(checkpoint.completed_parts.is_empty());
+    assert_eq!(backend.create_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(backend.aborts.load(Ordering::SeqCst), 0);
+
+    let checkpoint = error.into_checkpoint().expect("checkpoint should be owned");
+    backend
+        .abort_upload(&checkpoint.upload_id)
+        .await
+        .expect("explicit cleanup should succeed");
     assert_eq!(backend.aborts.load(Ordering::SeqCst), 1);
 }
 

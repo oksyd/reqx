@@ -11,11 +11,9 @@ use std::io;
 use std::time::{Duration, Instant};
 
 #[cfg(any(feature = "_async", feature = "_blocking"))]
-use crate::content_encoding::DecodeContentEncodingError;
-use crate::error::Error;
-#[cfg(any(feature = "_async", feature = "_blocking"))]
-use crate::metrics::StreamCompletion;
-use crate::util::truncate_body;
+use crate::core::content_encoding::DecodeContentEncodingError;
+use crate::core::error::Error;
+use crate::core::util::truncate_body;
 
 #[derive(Clone)]
 /// Fully buffered HTTP response body and metadata.
@@ -86,15 +84,6 @@ impl Response {
 }
 
 #[cfg(any(feature = "_async", feature = "_blocking"))]
-pub(crate) trait StreamOutcomeHooks {
-    fn complete_success(&mut self);
-
-    fn complete_error(&mut self, error: &Error);
-
-    fn complete_canceled(&mut self);
-}
-
-#[cfg(any(feature = "_async", feature = "_blocking"))]
 pub(crate) const DEFAULT_STREAM_DEADLINE_SLACK: Duration = Duration::from_millis(10);
 
 #[cfg(any(feature = "_async", feature = "_blocking"))]
@@ -118,123 +107,6 @@ pub(crate) fn deadline_within_slack(
     deadline_slack: Duration,
 ) -> bool {
     deadline_at.saturating_duration_since(now) <= deadline_slack
-}
-
-#[cfg(any(feature = "_async", feature = "_blocking"))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum StreamLifecycleState {
-    Pending,
-    Success,
-    Error,
-    Canceled,
-}
-
-#[cfg(any(feature = "_async", feature = "_blocking"))]
-pub(crate) struct StreamLifecycle {
-    completion: Option<StreamCompletion>,
-    hooks: Option<Box<dyn StreamOutcomeHooks + Send>>,
-    state: StreamLifecycleState,
-}
-
-#[cfg(any(feature = "_async", feature = "_blocking"))]
-impl StreamLifecycle {
-    pub(crate) fn new(hooks: Option<Box<dyn StreamOutcomeHooks + Send>>) -> Self {
-        Self {
-            completion: None,
-            hooks,
-            state: StreamLifecycleState::Pending,
-        }
-    }
-
-    pub(crate) fn attach_completion(&mut self, completion: StreamCompletion) {
-        self.completion = Some(completion);
-    }
-
-    pub(crate) fn complete_success(&mut self) {
-        if self.state != StreamLifecycleState::Pending {
-            return;
-        }
-        self.state = StreamLifecycleState::Success;
-        if let Some(hooks) = &mut self.hooks {
-            hooks.complete_success();
-        }
-        if let Some(completion) = &mut self.completion {
-            completion.complete_success();
-        }
-    }
-
-    pub(crate) fn complete_error(&mut self, error: &Error) {
-        if self.state != StreamLifecycleState::Pending {
-            return;
-        }
-        self.state = StreamLifecycleState::Error;
-        if let Some(hooks) = &mut self.hooks {
-            hooks.complete_error(error);
-        }
-        if let Some(completion) = &mut self.completion {
-            completion.complete_error(error);
-        }
-    }
-
-    pub(crate) fn complete_canceled(&mut self) {
-        if self.state != StreamLifecycleState::Pending {
-            return;
-        }
-        self.state = StreamLifecycleState::Canceled;
-        if let Some(hooks) = &mut self.hooks {
-            hooks.complete_canceled();
-        }
-        if let Some(completion) = &mut self.completion {
-            completion.complete_canceled();
-        }
-    }
-}
-
-#[cfg(any(feature = "_async", feature = "_blocking"))]
-impl std::fmt::Debug for StreamLifecycle {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("StreamLifecycle")
-            .field("has_completion", &self.completion.is_some())
-            .field("has_hooks", &self.hooks.is_some())
-            .field("state", &self.state)
-            .finish()
-    }
-}
-
-#[cfg(any(feature = "_async", feature = "_blocking"))]
-impl Drop for StreamLifecycle {
-    fn drop(&mut self) {
-        self.complete_canceled();
-    }
-}
-
-#[cfg(any(feature = "_async", feature = "_blocking"))]
-pub(super) fn attach_completion(
-    lifecycle: &mut Option<StreamLifecycle>,
-    completion: StreamCompletion,
-) {
-    if let Some(lifecycle) = lifecycle {
-        lifecycle.attach_completion(completion);
-    } else {
-        let mut new_lifecycle = StreamLifecycle::new(None);
-        new_lifecycle.attach_completion(completion);
-        *lifecycle = Some(new_lifecycle);
-    }
-}
-
-#[cfg(any(feature = "_async", feature = "_blocking"))]
-pub(super) fn complete_success(lifecycle: &mut Option<StreamLifecycle>) {
-    if let Some(lifecycle) = lifecycle {
-        lifecycle.complete_success();
-    }
-}
-
-#[cfg(any(feature = "_async", feature = "_blocking"))]
-pub(super) fn complete_error(lifecycle: &mut Option<StreamLifecycle>, error: &Error) {
-    if let Some(lifecycle) = lifecycle {
-        lifecycle.complete_error(error);
-    }
 }
 
 #[cfg(any(feature = "_async", feature = "_blocking"))]
@@ -361,3 +233,6 @@ pub(crate) use async_stream::{ResponseStreamContext, StreamPermits};
 pub use blocking_stream::BlockingResponseStream;
 #[cfg(feature = "_blocking")]
 pub(crate) use blocking_stream::BlockingResponseStreamContext;
+
+#[cfg(test)]
+mod contract_tests;

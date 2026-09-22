@@ -4,8 +4,9 @@ use bytes::Bytes;
 use http::header::{CONTENT_ENCODING, CONTENT_LENGTH};
 use http::{HeaderMap, Uri};
 
-use crate::error::TransportErrorKind;
-use crate::proxy::ProxyConfig;
+use crate::core::error::TransportErrorKind;
+use crate::core::proxy::ProxyConfig;
+use crate::core::util::read_retry_interrupted;
 use crate::tls::{TlsBackend, TlsOptions};
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
@@ -16,7 +17,6 @@ use crate::tls::{
     TlsClientIdentity, TlsRootCertificate, TlsRootStore, parse_pem_certificate_blocks,
     tls_config_error, tls_version_bounds,
 };
-use crate::util::read_retry_interrupted;
 
 #[cfg(feature = "blocking-tls-rustls-ring")]
 const DEFAULT_TLS_BACKEND: TlsBackend = TlsBackend::RustlsRing;
@@ -56,7 +56,7 @@ pub(super) fn remove_content_encoding_headers(headers: &mut HeaderMap) {
 }
 
 pub(super) fn is_proxy_bypassed(proxy: &ProxyConfig, uri: &Uri) -> bool {
-    crate::proxy::should_bypass_proxy_uri(&proxy.no_proxy_rules, uri)
+    crate::core::proxy::should_bypass_proxy_uri(&proxy.no_proxy_rules, uri)
 }
 
 #[cfg(any(
@@ -163,7 +163,7 @@ fn build_sync_tls_config(
     tls_options: &TlsOptions,
 ) -> crate::Result<ureq::tls::TlsConfig> {
     if !backend_is_available(backend) {
-        return Err(crate::error::Error::TlsBackendUnavailable {
+        return Err(crate::core::error::Error::TlsBackendUnavailable {
             backend: backend.as_str(),
         });
     }
@@ -275,7 +275,7 @@ fn build_sync_tls_config(
                 feature = "blocking-tls-rustls-aws-lc-rs"
             )))]
             {
-                return Err(crate::error::Error::TlsBackendUnavailable {
+                return Err(crate::core::error::Error::TlsBackendUnavailable {
                     backend: backend.as_str(),
                 });
             }
@@ -306,7 +306,7 @@ fn build_sync_tls_config(
                     feature = "blocking-tls-rustls-aws-lc-rs"
                 )))]
                 {
-                    return Err(crate::error::Error::TlsBackendUnavailable {
+                    return Err(crate::core::error::Error::TlsBackendUnavailable {
                         backend: backend.as_str(),
                     });
                 }
@@ -408,7 +408,7 @@ pub(super) fn make_agent_config(
     _pool_max_idle_connections: usize,
     _proxy: Option<ureq::Proxy>,
 ) -> crate::Result<ureq::config::Config> {
-    Err(crate::error::Error::TlsBackendUnavailable {
+    Err(crate::core::error::Error::TlsBackendUnavailable {
         backend: tls_backend.as_str(),
     })
 }
@@ -417,6 +417,16 @@ pub(super) fn make_agent_config(
 pub(super) struct TransportAgents {
     pub(super) direct: ureq::Agent,
     pub(super) proxy: Option<ureq::Agent>,
+}
+
+pub(crate) fn is_timeout_io_error(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+    ) || error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<ureq::Error>())
+        .is_some_and(|source| matches!(source, ureq::Error::Timeout(_)))
 }
 
 pub(super) fn classify_ureq_transport_error(error: &ureq::Error) -> TransportErrorKind {
@@ -441,9 +451,11 @@ pub(super) fn classify_ureq_transport_error(error: &ureq::Error) -> TransportErr
         ureq::Error::ConnectProxyFailed(_) | ureq::Error::ConnectionFailed => {
             TransportErrorKind::Connect
         }
-        ureq::Error::Io(source) if crate::util::is_tls_error(source) => TransportErrorKind::Tls,
+        ureq::Error::Io(source) if crate::core::util::is_tls_error(source) => {
+            TransportErrorKind::Tls
+        }
         ureq::Error::Io(source) => {
-            crate::util::classify_io_transport_error_kind(source.kind(), false)
+            crate::core::util::classify_io_transport_error_kind(source.kind(), false)
                 .unwrap_or(TransportErrorKind::Other)
         }
         _ => TransportErrorKind::Other,
@@ -640,7 +652,7 @@ mod rustls_tls_config_tests {
             .expect_err("invalid custom root should fail before webpki roots are added");
 
         match error {
-            crate::error::Error::TlsConfig { message, .. } => {
+            crate::core::error::Error::TlsConfig { message, .. } => {
                 assert!(message.contains("failed to parse custom root certificate"));
             }
             other => panic!("unexpected error: {other}"),
@@ -651,7 +663,7 @@ mod rustls_tls_config_tests {
 #[cfg(all(test, feature = "blocking-tls-native"))]
 mod native_tls_config_tests {
     use super::build_sync_tls_config;
-    use crate::error::Error;
+    use crate::core::error::Error;
     use crate::tls::{TlsBackend, TlsOptions, TlsRootStore};
 
     #[test]
@@ -726,7 +738,7 @@ mod native_tls_config_tests {
 #[cfg(test)]
 mod transport_error_classification_tests {
     use super::classify_ureq_transport_error;
-    use crate::error::TransportErrorKind;
+    use crate::core::error::TransportErrorKind;
 
     #[cfg(any(
         feature = "blocking-tls-rustls-ring",
@@ -776,3 +788,6 @@ mod transport_error_classification_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod contract_tests;

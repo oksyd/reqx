@@ -4,9 +4,11 @@ use std::time::{Duration, Instant, SystemTime};
 use bytes::Bytes;
 use http::{HeaderMap, Method};
 
-use crate::content_encoding::{DecodeContentEncodingError, decode_content_encoded_body_limited};
-use crate::error::Error;
-use crate::retry::RetryPolicy;
+use crate::core::content_encoding::{
+    DecodeContentEncodingError, decode_content_encoded_body_limited,
+};
+use crate::core::error::Error;
+use crate::core::retry::RetryPolicy;
 
 /// Chooses the base URL used for an outbound request.
 pub trait EndpointSelector: Send + Sync {
@@ -309,3 +311,6 @@ fn map_decode_error(
         },
     }
 }
+
+#[cfg(test)]
+mod contract_tests;

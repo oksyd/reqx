@@ -2,10 +2,10 @@ use std::time::Duration;
 
 use http::{HeaderMap, Method};
 
-use crate::config::RequestTimeoutConfig;
-use crate::policy::{RedirectPolicy, StatusPolicy};
-use crate::retry::RetryPolicy;
-use crate::util::append_query_pairs;
+use crate::core::config::RequestTimeoutConfig;
+use crate::core::policy::{RedirectPolicy, StatusPolicy};
+use crate::core::retry::RetryPolicy;
+use crate::core::util::append_query_pairs;
 
 #[derive(Default)]
 pub(crate) struct RequestExecutionOverrides {

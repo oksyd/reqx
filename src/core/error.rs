@@ -1,7 +1,7 @@
 use http::{HeaderMap, Method};
 use std::time::{Duration, SystemTime};
 
-use crate::util::{parse_retry_after, redact_uri_like_text_for_logs};
+use crate::core::util::{parse_retry_after, redact_uri_like_text_for_logs};
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 pub(crate) fn summarize_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
@@ -825,3 +825,6 @@ impl Error {
         }
     }
 }
+
+#[cfg(test)]
+mod contract_tests;

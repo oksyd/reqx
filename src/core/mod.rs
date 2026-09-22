@@ -1,3 +1,6 @@
+//! Shared request policies, validation, and execution state.
+//! Concrete connections and backend error adapters belong to their client modules.
+
 pub(crate) mod config;
 pub(crate) mod content_encoding;
 pub(crate) mod dns;

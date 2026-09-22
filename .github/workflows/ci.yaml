@@ -118,7 +118,7 @@ jobs:
           - name: all-tls-backends
             command: cargo check --lib --tests --no-default-features --features async-tls-rustls-ring,async-tls-rustls-aws-lc-rs,async-tls-native,blocking-tls-rustls-ring,blocking-tls-rustls-aws-lc-rs,blocking-tls-native
           - name: no-transport
-            command: cargo check --lib --no-default-features
+            command: cargo test --lib --no-default-features
           - name: internal-feature-guards
             command: |
               async_guard_log="$(mktemp)"

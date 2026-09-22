@@ -9,7 +9,7 @@ use std::fmt;
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs"
 ))]
-use crate::error::Error;
+use crate::core::error::Error;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -155,7 +155,7 @@ impl fmt::Debug for TlsOptions {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg(any(
-    all(test, feature = "_async"),
+    test,
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
     feature = "async-tls-rustls-aws-lc-rs",
@@ -179,7 +179,7 @@ impl TlsVersionBounds {
 }
 
 #[cfg(any(
-    all(test, feature = "_async"),
+    test,
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
     feature = "async-tls-rustls-aws-lc-rs",
@@ -378,7 +378,7 @@ pub(crate) fn parse_pem_certificate_blocks(
 #[cfg(test)]
 mod tests {
     use super::{TlsBackend, parse_pem_certificate_blocks};
-    use crate::error::Error;
+    use crate::core::error::Error;
 
     #[test]
     fn pem_certificate_parser_rejects_unterminated_certificate_tail() {
@@ -476,3 +476,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod contract_tests;

@@ -8,10 +8,8 @@ mod transport_error;
 mod uri;
 
 pub(crate) use backoff::{clamp_f64_or_fallback, exponential_backoff_with_jitter};
-#[cfg(feature = "_async")]
-pub(crate) use headers::ensure_accept_encoding_async;
-#[cfg(feature = "_blocking")]
-pub(crate) use headers::ensure_accept_encoding_blocking;
+#[cfg(any(feature = "_async", feature = "_blocking"))]
+pub(crate) use headers::ensure_accept_encoding;
 #[cfg(any(test, feature = "_async", feature = "_blocking"))]
 pub(crate) use headers::validate_request_framing_headers;
 #[cfg(any(feature = "_async", feature = "_blocking"))]
@@ -19,8 +17,6 @@ pub(crate) use headers::{
     mark_sensitive_header_value, mark_sensitive_headers, parse_header_name, parse_header_value,
 };
 pub(crate) use headers::{merge_headers, truncate_body};
-#[cfg(all(feature = "_async", feature = "resumable-upload"))]
-pub(crate) use io::read_async_retry_interrupted;
 #[cfg(any(
     test,
     feature = "_blocking",
@@ -47,22 +43,8 @@ pub(crate) use timing::{
 };
 #[cfg(any(feature = "_async", feature = "_blocking"))]
 pub(crate) use timing::{duration_from_millis_saturating, saturating_u64_to_usize};
-#[cfg(any(
-    feature = "async-tls-native",
-    feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
-))]
-pub(crate) use transport_error::classify_transport_error;
-#[cfg(feature = "_blocking")]
-pub(crate) use transport_error::{
-    classify_io_transport_error_kind, is_timeout_io_error, is_tls_error,
-};
-#[cfg(all(test, feature = "_async"))]
-pub(crate) use transport_error::{
-    classify_transport_error_source_for_test, classify_transport_error_text_for_test,
-};
-#[cfg(all(test, feature = "_async"))]
-pub(crate) use uri::join_base_path;
+#[cfg(any(feature = "_async", feature = "_blocking"))]
+pub(crate) use transport_error::{classify_io_transport_error_kind, is_tls_error};
 #[cfg(any(feature = "_async", feature = "_blocking"))]
 pub(crate) use uri::validate_http_proxy_uri;
 pub(crate) use uri::{

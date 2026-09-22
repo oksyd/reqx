@@ -4,7 +4,7 @@ use http::header::{
 };
 use http::{HeaderMap, Method};
 
-use crate::error::Error;
+use crate::core::error::Error;
 
 const MAX_ERROR_BODY_LEN: usize = 2048;
 
@@ -33,7 +33,7 @@ fn enabled_accept_encoding() -> Option<&'static str> {
     }
 }
 
-fn ensure_accept_encoding(method: &Method, headers: &mut HeaderMap) {
+pub(crate) fn ensure_accept_encoding(method: &Method, headers: &mut HeaderMap) {
     // Byte ranges refer to the encoded representation. Automatically negotiating
     // compression can turn an ordinary range into a fragment we cannot decode.
     if *method == Method::HEAD
@@ -45,16 +45,6 @@ fn ensure_accept_encoding(method: &Method, headers: &mut HeaderMap) {
     if let Some(value) = enabled_accept_encoding() {
         headers.insert(ACCEPT_ENCODING, HeaderValue::from_static(value));
     }
-}
-
-#[cfg(feature = "_async")]
-pub(crate) fn ensure_accept_encoding_async(method: &Method, headers: &mut HeaderMap) {
-    ensure_accept_encoding(method, headers);
-}
-
-#[cfg(feature = "_blocking")]
-pub(crate) fn ensure_accept_encoding_blocking(method: &Method, headers: &mut HeaderMap) {
-    ensure_accept_encoding(method, headers);
 }
 
 pub(crate) fn parse_header_name(name: &str) -> Result<HeaderName, Error> {
@@ -245,3 +235,6 @@ mod tests {
         assert!(!head.contains_key(ACCEPT_ENCODING));
     }
 }
+
+#[cfg(test)]
+mod contract_tests;

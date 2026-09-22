@@ -3,9 +3,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::error::Error;
-use crate::extensions::Clock;
-use crate::util::{duration_from_secs_f64_saturating, lock_unpoisoned, normalize_host_key};
+use crate::core::error::Error;
+use crate::core::extensions::Clock;
+use crate::core::util::{duration_from_secs_f64_saturating, lock_unpoisoned, normalize_host_key};
 
 const PER_HOST_RATE_LIMIT_ENTRY_TTL: Duration = Duration::from_secs(300);
 const PER_HOST_RATE_LIMIT_MAX_ENTRIES: usize = 1024;
@@ -284,11 +284,9 @@ impl TokenBucket {
         let rate = self.policy.configured_requests_per_second();
         let needed_tokens = (1.0 - self.tokens).max(0.0);
         let delay_secs = needed_tokens / rate;
-        if delay_secs <= f64::EPSILON {
-            Duration::ZERO
-        } else {
-            duration_from_secs_f64_saturating(delay_secs)
-        }
+        // Zero means acquisition succeeded and a token was consumed. Rounding
+        // a positive sub-nanosecond delay to zero would grant an uncharged slot.
+        duration_from_secs_f64_saturating(delay_secs).max(Duration::from_nanos(1))
     }
 
     fn can_consume_now(&mut self, now: Instant) -> bool {
@@ -560,7 +558,7 @@ mod tests {
         cleanup_stale_per_host_rate_limits, resolve_server_throttle_scope,
         server_throttle_scope_from_headers,
     };
-    use crate::extensions::Clock;
+    use crate::core::extensions::Clock;
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use std::sync::Mutex;
@@ -619,6 +617,31 @@ mod tests {
 
         clock.advance(wait);
         assert_eq!(limiter.acquire_delay(None), Duration::ZERO);
+    }
+
+    #[test]
+    fn fractional_refill_wait_does_not_grant_an_uncharged_slot() {
+        let clock = Arc::new(TestClock::default());
+        let limiter = RateLimiter::new(
+            Some(
+                RateLimitPolicy::standard()
+                    .requests_per_second(3.0)
+                    .burst(1),
+            ),
+            None,
+            clock.clone(),
+        )
+        .expect("global limiter should be built");
+
+        assert_eq!(limiter.acquire_delay(None), Duration::ZERO);
+        clock.advance(Duration::from_nanos(333_333_333));
+
+        for _ in 0..3 {
+            assert_eq!(limiter.acquire_delay(None), Duration::from_nanos(1));
+        }
+        clock.advance(Duration::from_nanos(1));
+        assert_eq!(limiter.acquire_delay(None), Duration::ZERO);
+        assert!(limiter.acquire_delay(None) > Duration::from_millis(333));
     }
 
     #[test]

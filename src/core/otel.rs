@@ -10,9 +10,9 @@ mod enabled {
     use opentelemetry::metrics::{Counter, Histogram};
     use opentelemetry::trace::{Span, SpanKind, Status, Tracer};
 
-    use crate::error::Error;
-    use crate::extensions::OtelPathNormalizer;
-    use crate::util::normalize_host_key;
+    use crate::core::error::Error;
+    use crate::core::extensions::OtelPathNormalizer;
+    use crate::core::util::normalize_host_key;
 
     #[derive(Clone, Debug, Default)]
     pub(crate) struct OtelTelemetry {
@@ -276,8 +276,8 @@ mod enabled {
     #[cfg(test)]
     mod tests {
         use super::{error_span_attributes, error_span_status, request_span_attributes};
-        use crate::error::{Error, TimeoutPhase};
-        use crate::extensions::{OtelPathNormalizer, StandardOtelPathNormalizer};
+        use crate::core::error::{Error, TimeoutPhase};
+        use crate::core::extensions::{OtelPathNormalizer, StandardOtelPathNormalizer};
         use opentelemetry::trace::Status;
 
         struct FixedPathNormalizer;
@@ -395,8 +395,8 @@ mod enabled {
 
     use http::Method;
 
-    use crate::error::Error;
-    use crate::extensions::OtelPathNormalizer;
+    use crate::core::error::Error;
+    use crate::core::extensions::OtelPathNormalizer;
 
     #[derive(Clone, Debug, Default)]
     pub(crate) struct OtelTelemetry;

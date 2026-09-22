@@ -3,7 +3,7 @@ use std::time::{Duration, Instant, SystemTime};
 use http::header::RETRY_AFTER;
 use http::{HeaderMap, Method};
 
-use crate::error::Error;
+use crate::core::error::Error;
 
 pub(crate) fn phase_timeout(
     per_attempt_timeout: Duration,
@@ -145,3 +145,6 @@ pub(crate) fn parse_retry_after_capped(
 ) -> Option<Duration> {
     parse_retry_after(headers, now).map(|delay| delay.min(max_delay))
 }
+
+#[cfg(test)]
+mod contract_tests;
