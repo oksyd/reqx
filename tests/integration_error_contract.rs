@@ -1,5 +1,6 @@
 #![cfg(any(feature = "_async", feature = "_blocking"))]
 
+mod support;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -231,6 +232,7 @@ impl Observer for CountingObserver {
 
 #[cfg(feature = "_async")]
 async fn async_get_error(status: u16, body: Vec<u8>, max_response_body_bytes: usize) -> Error {
+    support::install_crypto_provider();
     use reqx::prelude::{Client, RetryPolicy};
 
     let server = OneShotServer::start(
@@ -258,6 +260,7 @@ async fn async_get_error(status: u16, body: Vec<u8>, max_response_body_bytes: us
 
 #[cfg(feature = "_blocking")]
 fn blocking_get_error(status: u16, body: Vec<u8>, max_response_body_bytes: usize) -> Error {
+    support::install_crypto_provider();
     use reqx::blocking::Client;
     use reqx::prelude::RetryPolicy;
 
@@ -300,6 +303,7 @@ async fn async_error_code_contract_status_and_body_limit() {
 #[cfg(feature = "_async")]
 #[tokio::test(flavor = "current_thread")]
 async fn async_http_status_error_carries_response_headers() {
+    support::install_crypto_provider();
     use reqx::prelude::{Client, RetryPolicy};
 
     let server = OneShotServer::start(
@@ -366,6 +370,7 @@ fn blocking_error_code_contract_status_and_body_limit() {
 #[cfg(feature = "_blocking")]
 #[test]
 fn blocking_http_status_error_carries_response_headers() {
+    support::install_crypto_provider();
     use reqx::blocking::Client;
     use reqx::prelude::RetryPolicy;
 
@@ -418,6 +423,7 @@ fn blocking_http_status_error_carries_response_headers() {
 #[cfg(feature = "_async")]
 #[tokio::test(flavor = "current_thread")]
 async fn async_send_response_returns_response_for_non_success() {
+    support::install_crypto_provider();
     use reqx::prelude::{Client, RetryPolicy};
 
     let server = OneShotServer::start(
@@ -443,6 +449,7 @@ async fn async_send_response_returns_response_for_non_success() {
 #[cfg(feature = "_async")]
 #[tokio::test(flavor = "current_thread")]
 async fn async_client_default_status_policy_response_returns_non_success() {
+    support::install_crypto_provider();
     use reqx::prelude::{Client, RetryPolicy};
 
     let server = OneShotServer::start(
@@ -467,6 +474,7 @@ async fn async_client_default_status_policy_response_returns_non_success() {
 #[cfg(feature = "_blocking")]
 #[test]
 fn blocking_send_response_returns_response_for_non_success() {
+    support::install_crypto_provider();
     use reqx::blocking::Client;
     use reqx::prelude::RetryPolicy;
 
@@ -492,6 +500,7 @@ fn blocking_send_response_returns_response_for_non_success() {
 #[cfg(feature = "_blocking")]
 #[test]
 fn blocking_client_default_status_policy_response_returns_non_success() {
+    support::install_crypto_provider();
     use reqx::blocking::Client;
     use reqx::prelude::RetryPolicy;
 
@@ -516,6 +525,7 @@ fn blocking_client_default_status_policy_response_returns_non_success() {
 #[cfg(feature = "_async")]
 #[tokio::test(flavor = "current_thread")]
 async fn async_send_response_stream_returns_stream_for_non_success() {
+    support::install_crypto_provider();
     use reqx::prelude::{Client, RetryPolicy};
 
     let server = OneShotServer::start(
@@ -546,6 +556,7 @@ async fn async_send_response_stream_returns_stream_for_non_success() {
 #[cfg(feature = "_async")]
 #[tokio::test(flavor = "current_thread")]
 async fn async_endpoint_selector_can_override_base_url() {
+    support::install_crypto_provider();
     use reqx::advanced::RoundRobinEndpointSelector;
     use reqx::prelude::Client;
 
@@ -572,6 +583,7 @@ async fn async_endpoint_selector_can_override_base_url() {
 #[cfg(feature = "_async")]
 #[tokio::test(flavor = "current_thread")]
 async fn async_observer_receives_request_start_event() {
+    support::install_crypto_provider();
     use reqx::prelude::{Client, RetryPolicy};
 
     let server = OneShotServer::start(
@@ -604,6 +616,7 @@ async fn async_observer_receives_request_start_event() {
 #[cfg(feature = "_blocking")]
 #[test]
 fn blocking_send_response_stream_returns_stream_for_non_success() {
+    support::install_crypto_provider();
     use reqx::blocking::Client;
     use reqx::prelude::RetryPolicy;
 
@@ -633,6 +646,7 @@ fn blocking_send_response_stream_returns_stream_for_non_success() {
 #[cfg(feature = "_blocking")]
 #[test]
 fn blocking_endpoint_selector_can_override_base_url() {
+    support::install_crypto_provider();
     use reqx::advanced::RoundRobinEndpointSelector;
     use reqx::blocking::Client;
 
@@ -658,6 +672,7 @@ fn blocking_endpoint_selector_can_override_base_url() {
 #[cfg(feature = "_blocking")]
 #[test]
 fn blocking_observer_receives_request_start_event() {
+    support::install_crypto_provider();
     use reqx::blocking::Client;
     use reqx::prelude::RetryPolicy;
 

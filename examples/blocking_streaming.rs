@@ -3,6 +3,7 @@ use std::time::Duration;
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-no-provider",
     feature = "blocking-tls-native"
 ))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -10,6 +11,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     use reqx::blocking::Client;
     use reqx::prelude::RetryPolicy;
+
+    #[cfg(feature = "blocking-tls-rustls-no-provider")]
+    rustls_graviola::default_provider()
+        .install_default()
+        .expect("install application crypto provider");
 
     let client = Client::builder("https://postman-echo.com")
         .client_name("reqx-example-blocking-stream")
@@ -38,6 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(not(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-no-provider",
     feature = "blocking-tls-native"
 )))]
 fn main() {

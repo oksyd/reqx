@@ -1,4 +1,6 @@
 #![cfg(any(feature = "_async", feature = "_blocking"))]
+
+mod support;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -204,6 +206,7 @@ macro_rules! cidr_suite {
 #[cfg(feature = "_async")]
 #[tokio::test]
 async fn async_no_proxy_cidr_routing() {
+    support::install_crypto_provider();
     macro_rules! wait {
         ($e:expr) => {
             $e.await
@@ -215,6 +218,7 @@ async fn async_no_proxy_cidr_routing() {
 #[cfg(feature = "_blocking")]
 #[test]
 fn blocking_no_proxy_cidr_routing() {
+    support::install_crypto_provider();
     macro_rules! wait {
         ($e:expr) => {
             $e

@@ -2,6 +2,7 @@ use crate::async_client::Client;
 
 #[test]
 fn body_stream_accepts_send_non_sync_stream() {
+    crate::test_support::install_crypto_provider();
     use std::cell::Cell;
     use std::pin::Pin;
     use std::task::{Context, Poll};

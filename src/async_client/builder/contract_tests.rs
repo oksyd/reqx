@@ -6,11 +6,18 @@ use crate::core::error::{Error, ErrorCode};
 use crate::core::policy::StatusPolicy;
 use crate::rate_limit::RateLimitPolicy;
 use crate::resilience::{AdaptiveConcurrencyPolicy, CircuitBreakerPolicy, RetryBudgetPolicy};
-use crate::tls::{TlsBackend, TlsRootStore, TlsVersion};
+#[cfg(any(
+    feature = "async-tls-rustls-ring",
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-native"
+))]
+use crate::tls::TlsVersion;
+use crate::tls::{TlsBackend, TlsRootStore};
 
 #[cfg(feature = "async-tls-rustls-ring")]
 #[test]
 fn selecting_tls_version_for_rustls_ring_builds() {
+    crate::test_support::install_crypto_provider();
     let client = Client::builder("https://example.com")
         .tls_backend(TlsBackend::RustlsRing)
         .tls_version(TlsVersion::V1_2)
@@ -23,6 +30,7 @@ fn selecting_tls_version_for_rustls_ring_builds() {
 #[cfg(feature = "async-tls-rustls-aws-lc-rs")]
 #[test]
 fn selecting_tls_version_for_rustls_aws_lc_builds() {
+    crate::test_support::install_crypto_provider();
     let client = Client::builder("https://example.com")
         .tls_backend(TlsBackend::RustlsAwsLcRs)
         .tls_max_version(TlsVersion::V1_2)
@@ -35,6 +43,7 @@ fn selecting_tls_version_for_rustls_aws_lc_builds() {
 #[cfg(feature = "async-tls-native")]
 #[test]
 fn selecting_tls_version_for_native_tls12_builds() {
+    crate::test_support::install_crypto_provider();
     let client = Client::builder("https://example.com")
         .tls_backend(TlsBackend::NativeTls)
         .tls_version(TlsVersion::V1_2)
@@ -47,6 +56,7 @@ fn selecting_tls_version_for_native_tls12_builds() {
 #[cfg(feature = "async-tls-native")]
 #[test]
 fn selecting_tls13_bounds_for_native_tls_builds() {
+    crate::test_support::install_crypto_provider();
     let client = Client::builder("https://example.com")
         .tls_backend(TlsBackend::NativeTls)
         .tls_min_version(TlsVersion::V1_2)
@@ -59,6 +69,7 @@ fn selecting_tls13_bounds_for_native_tls_builds() {
 
 #[test]
 fn invalid_tls_root_ca_pem_returns_tls_config_error() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .tls_root_ca_pem("not-a-pem-certificate")
         .build();
@@ -74,6 +85,7 @@ fn invalid_tls_root_ca_pem_returns_tls_config_error() {
 
 #[test]
 fn build_rejects_invalid_base_url_early() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("not-a-valid-base-url").build();
     let error = match result {
         Ok(_) => panic!("invalid base url should fail at build time"),
@@ -89,6 +101,7 @@ fn build_rejects_invalid_base_url_early() {
 
 #[test]
 fn build_rejects_base_url_with_empty_port_authority() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com:/v1").build();
     let error = match result {
         Ok(_) => panic!("base url with empty authority port should fail at build time"),
@@ -104,6 +117,7 @@ fn build_rejects_base_url_with_empty_port_authority() {
 
 #[test]
 fn build_rejects_non_http_base_url_scheme() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("ftp://api.example.com").build();
     let error = match result {
         Ok(_) => panic!("non-http base url should fail at build time"),
@@ -119,6 +133,7 @@ fn build_rejects_non_http_base_url_scheme() {
 
 #[test]
 fn build_rejects_non_http_proxy_scheme() {
+    crate::test_support::install_crypto_provider();
     let proxy_uri: http::Uri = "https://proxy.example.com:8443"
         .parse()
         .expect("proxy uri should parse");
@@ -140,6 +155,7 @@ fn build_rejects_non_http_proxy_scheme() {
 
 #[test]
 fn build_rejects_http_proxy_uri_with_invalid_authority() {
+    crate::test_support::install_crypto_provider();
     let proxy_uri: http::Uri = "http://proxy.example.com:invalid"
         .parse()
         .expect("proxy uri should parse");
@@ -162,6 +178,7 @@ fn build_rejects_http_proxy_uri_with_invalid_authority() {
 
 #[test]
 fn build_rejects_http_proxy_uri_with_empty_port() {
+    crate::test_support::install_crypto_provider();
     let proxy_uri: http::Uri = "http://proxy.example.com:/"
         .parse()
         .expect("proxy uri should parse");
@@ -184,6 +201,7 @@ fn build_rejects_http_proxy_uri_with_empty_port() {
 
 #[test]
 fn build_rejects_http_proxy_uri_with_credentials() {
+    crate::test_support::install_crypto_provider();
     let proxy_uri: http::Uri = "http://user:pass@proxy.example.com:8080"
         .parse()
         .expect("proxy uri should parse");
@@ -206,6 +224,7 @@ fn build_rejects_http_proxy_uri_with_credentials() {
 
 #[test]
 fn build_rejects_proxy_authorization_without_http_proxy() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .try_proxy_authorization("Basic dXNlcjpwYXNz")
         .expect("proxy authorization header should parse")
@@ -222,6 +241,7 @@ fn build_rejects_proxy_authorization_without_http_proxy() {
 
 #[test]
 fn build_rejects_base_url_with_query() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com/v1?token=abc").build();
     let error = match result {
         Ok(_) => panic!("base url with query should fail at build time"),
@@ -237,6 +257,7 @@ fn build_rejects_base_url_with_query() {
 
 #[test]
 fn build_rejects_base_url_with_fragment() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com/v1#anchor").build();
     let error = match result {
         Ok(_) => panic!("base url with fragment should fail at build time"),
@@ -252,6 +273,7 @@ fn build_rejects_base_url_with_fragment() {
 
 #[test]
 fn build_rejects_base_url_with_userinfo() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://user:pass@api.example.com/v1").build();
     let error = match result {
         Ok(_) => panic!("base url with userinfo should fail at build time"),
@@ -267,6 +289,7 @@ fn build_rejects_base_url_with_userinfo() {
 
 #[test]
 fn build_rejects_base_url_with_surrounding_whitespace() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder(" https://api.example.com/v1 ").build();
     let error = match result {
         Ok(_) => panic!("base url with surrounding whitespace should fail at build time"),
@@ -282,6 +305,7 @@ fn build_rejects_base_url_with_surrounding_whitespace() {
 
 #[test]
 fn client_profile_and_direct_builder_overrides_compose() {
+    crate::test_support::install_crypto_provider();
     let client = Client::builder("https://api.example.com")
         .profile(ClientProfile::LowLatency)
         .request_timeout(Duration::from_secs(4))
@@ -295,6 +319,7 @@ fn client_profile_and_direct_builder_overrides_compose() {
 
 #[test]
 fn build_rejects_invalid_adaptive_concurrency_policy() {
+    crate::test_support::install_crypto_provider();
     let policy = AdaptiveConcurrencyPolicy::standard()
         .min_limit(10)
         .initial_limit(8)
@@ -323,6 +348,7 @@ fn build_rejects_invalid_adaptive_concurrency_policy() {
 
 #[test]
 fn build_rejects_invalid_retry_budget_policy() {
+    crate::test_support::install_crypto_provider();
     let policy = RetryBudgetPolicy::standard().window(Duration::ZERO);
     let result = Client::builder("https://api.example.com")
         .retry_budget_policy(policy)
@@ -349,6 +375,7 @@ fn build_rejects_invalid_retry_budget_policy() {
 
 #[test]
 fn build_rejects_invalid_concurrency_limit_config() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .max_in_flight(0)
         .build();
@@ -372,6 +399,7 @@ fn build_rejects_invalid_concurrency_limit_config() {
 
 #[test]
 fn build_rejects_empty_client_name() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .client_name("   ")
         .build();
@@ -393,6 +421,7 @@ fn build_rejects_empty_client_name() {
 
 #[test]
 fn build_rejects_client_name_that_is_not_a_header_value() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .client_name("bad\r\nuser-agent")
         .build();
@@ -414,6 +443,7 @@ fn build_rejects_client_name_that_is_not_a_header_value() {
 
 #[test]
 fn build_rejects_invalid_circuit_breaker_policy() {
+    crate::test_support::install_crypto_provider();
     let policy = CircuitBreakerPolicy::standard().open_timeout(Duration::ZERO);
     let result = Client::builder("https://api.example.com")
         .circuit_breaker_policy(policy)
@@ -441,6 +471,7 @@ fn build_rejects_invalid_circuit_breaker_policy() {
 
 #[test]
 fn build_rejects_invalid_global_rate_limit_policy() {
+    crate::test_support::install_crypto_provider();
     let policy = RateLimitPolicy::standard().requests_per_second(0.0);
     let result = Client::builder("https://api.example.com")
         .global_rate_limit_policy(policy)
@@ -464,6 +495,7 @@ fn build_rejects_invalid_global_rate_limit_policy() {
 
 #[test]
 fn build_rejects_invalid_per_host_rate_limit_policy() {
+    crate::test_support::install_crypto_provider();
     let policy = RateLimitPolicy::standard().burst(0);
     let result = Client::builder("https://api.example.com")
         .per_host_rate_limit_policy(policy)
@@ -487,6 +519,7 @@ fn build_rejects_invalid_per_host_rate_limit_policy() {
 
 #[test]
 fn tls_root_store_specific_without_roots_returns_tls_config_error() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .tls_root_store(TlsRootStore::Specific)
         .build();
@@ -504,6 +537,7 @@ fn tls_root_store_specific_without_roots_returns_tls_config_error() {
 
 #[test]
 fn custom_root_ca_requires_explicit_root_store() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .tls_root_ca_der([1_u8, 2, 3, 4])
         .build();
@@ -527,6 +561,7 @@ fn custom_root_ca_requires_explicit_root_store() {
 ))]
 #[test]
 fn async_rustls_root_ca_pem_rejects_non_certificate_blocks() {
+    crate::test_support::install_crypto_provider();
     #[cfg(feature = "async-tls-rustls-ring")]
     let backend = TlsBackend::RustlsRing;
     #[cfg(all(
@@ -557,6 +592,7 @@ fn async_rustls_root_ca_pem_rejects_non_certificate_blocks() {
 
 #[test]
 fn rustls_backend_rejects_pkcs12_identity_configuration() {
+    crate::test_support::install_crypto_provider();
     #[cfg(feature = "async-tls-rustls-ring")]
     let backend = Some(TlsBackend::RustlsRing);
     #[cfg(all(
@@ -594,6 +630,7 @@ fn rustls_backend_rejects_pkcs12_identity_configuration() {
 #[cfg(feature = "async-tls-native")]
 #[test]
 fn native_tls_invalid_pkcs12_identity_returns_tls_config_error() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .tls_backend(TlsBackend::NativeTls)
         .tls_client_identity_pkcs12(vec![1, 2, 3, 4], "secret")
@@ -611,6 +648,7 @@ fn native_tls_invalid_pkcs12_identity_returns_tls_config_error() {
 #[cfg(feature = "async-tls-native")]
 #[test]
 fn native_tls_webpki_root_store_is_rejected() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .tls_backend(TlsBackend::NativeTls)
         .tls_root_store(TlsRootStore::WebPki)
@@ -629,6 +667,7 @@ fn native_tls_webpki_root_store_is_rejected() {
 
 #[test]
 fn try_add_no_proxy_rejects_invalid_rule() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com").try_add_no_proxy("[::1]not-a-port");
     let error = match result {
         Ok(_) => panic!("invalid no_proxy rule should fail"),
@@ -644,6 +683,7 @@ fn try_add_no_proxy_rejects_invalid_rule() {
 
 #[test]
 fn try_no_proxy_rejects_url_rule_with_path() {
+    crate::test_support::install_crypto_provider();
     let result =
         Client::builder("https://api.example.com").try_no_proxy(["https://api.example.com/v1"]);
     let error = match result {
@@ -660,6 +700,7 @@ fn try_no_proxy_rejects_url_rule_with_path() {
 
 #[test]
 fn try_no_proxy_redacts_sensitive_url_shaped_rule() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .try_no_proxy(["https://user:pass@api.example.com/v1?token=secret"]);
     let error = match result {
@@ -676,6 +717,7 @@ fn try_no_proxy_redacts_sensitive_url_shaped_rule() {
 
 #[test]
 fn try_no_proxy_rejects_url_rule_with_non_http_scheme() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com").try_no_proxy(["ftp://api.example.com"]);
     let error = match result {
         Ok(_) => panic!("url-shaped no_proxy rule with non-http scheme should fail"),
@@ -691,6 +733,7 @@ fn try_no_proxy_rejects_url_rule_with_non_http_scheme() {
 
 #[test]
 fn try_no_proxy_rejects_malformed_http_url_shape() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com").try_no_proxy(["http:/api.example.com"]);
     let error = match result {
         Ok(_) => panic!("malformed http no_proxy rule should fail"),
@@ -706,6 +749,7 @@ fn try_no_proxy_rejects_malformed_http_url_shape() {
 
 #[test]
 fn try_no_proxy_rejects_url_rule_with_invalid_authority() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .try_no_proxy(["https://api.example.com:invalid"]);
     let error = match result {
@@ -722,6 +766,7 @@ fn try_no_proxy_rejects_url_rule_with_invalid_authority() {
 
 #[test]
 fn try_no_proxy_rejects_url_rule_with_empty_port() {
+    crate::test_support::install_crypto_provider();
     let result =
         Client::builder("https://api.example.com").try_no_proxy(["https://api.example.com:/"]);
     let error = match result {
@@ -738,6 +783,7 @@ fn try_no_proxy_rejects_url_rule_with_empty_port() {
 
 #[test]
 fn try_no_proxy_rejects_invalid_rule() {
+    crate::test_support::install_crypto_provider();
     let result =
         Client::builder("https://api.example.com").try_no_proxy(["example.com", "[::1]not-a-port"]);
     let error = match result {
@@ -750,6 +796,7 @@ fn try_no_proxy_rejects_invalid_rule() {
 
 #[test]
 fn try_no_proxy_rejects_non_numeric_port_suffix() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com").try_no_proxy(["example.com:abc"]);
     let error = match result {
         Ok(_) => panic!("invalid no_proxy rule should fail"),
@@ -760,6 +807,7 @@ fn try_no_proxy_rejects_non_numeric_port_suffix() {
 
 #[test]
 fn no_proxy_records_invalid_rule_and_build_fails() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .no_proxy(["example.com", "[::1]not-a-port"])
         .build();
@@ -772,6 +820,7 @@ fn no_proxy_records_invalid_rule_and_build_fails() {
 
 #[test]
 fn no_proxy_build_error_redacts_sensitive_url_shaped_rule() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .no_proxy(["https://user:pass@api.example.com/v1?token=secret"])
         .build();
@@ -790,6 +839,7 @@ fn no_proxy_build_error_redacts_sensitive_url_shaped_rule() {
 #[cfg(not(feature = "otel"))]
 #[test]
 fn async_builder_rejects_otel_when_feature_is_unavailable() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .otel_enabled(true)
         .build();
@@ -813,6 +863,7 @@ fn async_builder_rejects_otel_when_feature_is_unavailable() {
 #[cfg(feature = "otel")]
 #[test]
 fn async_builder_accepts_otel_when_feature_is_available() {
+    crate::test_support::install_crypto_provider();
     Client::builder("https://api.example.com")
         .otel_enabled(true)
         .build()
@@ -822,6 +873,7 @@ fn async_builder_accepts_otel_when_feature_is_available() {
 #[cfg(feature = "async-tls-rustls-ring")]
 #[test]
 fn selecting_rustls_ring_backend_builds_when_feature_enabled() {
+    crate::test_support::install_crypto_provider();
     let client = Client::builder("https://api.example.com")
         .tls_backend(TlsBackend::RustlsRing)
         .build()
@@ -832,6 +884,7 @@ fn selecting_rustls_ring_backend_builds_when_feature_enabled() {
 #[cfg(not(feature = "async-tls-rustls-ring"))]
 #[test]
 fn selecting_rustls_ring_backend_returns_unavailable_when_feature_disabled() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .tls_backend(TlsBackend::RustlsRing)
         .build();
@@ -850,6 +903,7 @@ fn selecting_rustls_ring_backend_returns_unavailable_when_feature_disabled() {
 #[cfg(feature = "async-tls-rustls-aws-lc-rs")]
 #[test]
 fn selecting_rustls_aws_lc_backend_builds_when_feature_enabled() {
+    crate::test_support::install_crypto_provider();
     let client = Client::builder("https://api.example.com")
         .tls_backend(TlsBackend::RustlsAwsLcRs)
         .build()
@@ -860,6 +914,7 @@ fn selecting_rustls_aws_lc_backend_builds_when_feature_enabled() {
 #[cfg(not(feature = "async-tls-rustls-aws-lc-rs"))]
 #[test]
 fn selecting_rustls_aws_lc_backend_returns_unavailable_when_feature_disabled() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .tls_backend(TlsBackend::RustlsAwsLcRs)
         .build();
@@ -878,6 +933,7 @@ fn selecting_rustls_aws_lc_backend_returns_unavailable_when_feature_disabled() {
 #[cfg(feature = "async-tls-native")]
 #[test]
 fn selecting_native_tls_backend_builds_when_feature_enabled() {
+    crate::test_support::install_crypto_provider();
     let client = Client::builder("https://api.example.com")
         .tls_backend(TlsBackend::NativeTls)
         .build()
@@ -888,6 +944,7 @@ fn selecting_native_tls_backend_builds_when_feature_enabled() {
 #[cfg(not(feature = "async-tls-native"))]
 #[test]
 fn selecting_native_tls_backend_returns_unavailable_when_feature_disabled() {
+    crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .tls_backend(TlsBackend::NativeTls)
         .build();

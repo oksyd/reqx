@@ -568,16 +568,7 @@ fn build_rustls_no_provider_transport(
     pool_max_idle_per_host: usize,
     http2_only: bool,
 ) -> crate::Result<TransportClient> {
-    let provider = rustls::crypto::CryptoProvider::get_default()
-        .cloned()
-        .ok_or_else(|| Error::TlsBackendInit {
-            backend: TlsBackend::RustlsNoProvider.as_str(),
-            message: "no rustls CryptoProvider is installed as the process-wide default; \
-                install one (e.g. rustls-graviola) via \
-                rustls::crypto::CryptoProvider::install_default(...) before building a client \
-                with the async-tls-rustls-no-provider backend"
-                .to_string(),
-        })?;
+    let provider = crate::tls::installed_crypto_provider()?;
     let tls_config = build_rustls_tls_config(TlsBackend::RustlsNoProvider, provider, tls_options)?;
 
     Ok(build_rustls_transport(

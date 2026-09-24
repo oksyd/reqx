@@ -85,6 +85,8 @@
 //! - Async + `native-tls`: `async-tls-native`
 //! - Blocking + `ureq` + `rustls` + `ring`: `blocking-tls-rustls-ring`
 //! - Blocking + `ureq` + `rustls` + `aws-lc-rs`: `blocking-tls-rustls-aws-lc-rs`
+//! - Blocking + `ureq` + `rustls` + a caller-installed crypto provider:
+//!   `blocking-tls-rustls-no-provider`
 //! - Blocking + `ureq` + `native-tls`: `blocking-tls-native`
 //! - gzip response decoding: `compression-gzip` (default)
 //! - All response compression codecs: `compression`
@@ -134,7 +136,11 @@
 //!   blocks; pass private keys through the dedicated identity key parameter.
 //! - Blocking `native-tls` cannot merge custom root CAs into the system trust
 //!   store; use [`TlsRootStore::Specific`] when adding explicit roots there.
-//! - `async-tls-rustls-no-provider` does not select a crypto provider itself;
+//! - `async-tls-rustls-no-provider` and `blocking-tls-rustls-no-provider`
+//!   use the same application-installed provider. Set `default-features = false`
+//!   to avoid enabling ring through reqx. When other TLS features are enabled,
+//!   explicitly select [`TlsBackend::RustlsNoProvider`]. Neither feature selects
+//!   a crypto provider itself;
 //!   the application must install one as the process-wide rustls default
 //!   (e.g. `rustls::crypto::CryptoProvider::install_default(...)`) before
 //!   building a client. If none is installed, building a client returns
@@ -156,6 +162,7 @@ compile_error!("`_async` is internal; enable an `async-tls-*` feature instead");
     not(any(
         feature = "blocking-tls-rustls-ring",
         feature = "blocking-tls-rustls-aws-lc-rs",
+        feature = "blocking-tls-rustls-no-provider",
         feature = "blocking-tls-native"
     ))
 ))]
@@ -207,6 +214,7 @@ pub use crate::tls::{TlsBackend, TlsRootStore, TlsVersion};
     doc(cfg(any(
         feature = "blocking-tls-rustls-ring",
         feature = "blocking-tls-rustls-aws-lc-rs",
+        feature = "blocking-tls-rustls-no-provider",
         feature = "blocking-tls-native"
     )))
 )]
@@ -242,6 +250,7 @@ pub mod prelude {
         doc(cfg(any(
             feature = "blocking-tls-rustls-ring",
             feature = "blocking-tls-rustls-aws-lc-rs",
+            feature = "blocking-tls-rustls-no-provider",
             feature = "blocking-tls-native"
         )))
     )]
@@ -310,3 +319,7 @@ pub mod advanced {
         tls::{TlsBackend, TlsRootStore, TlsVersion},
     };
 }
+
+#[cfg(test)]
+#[path = "../tests/support/mod.rs"]
+mod test_support;

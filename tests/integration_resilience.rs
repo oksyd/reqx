@@ -1,5 +1,6 @@
 #![cfg(feature = "_async")]
 
+mod support;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -608,6 +609,7 @@ impl Drop for RawTcpServer {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn proxy_forwards_http_request_via_absolute_form() {
+    support::install_crypto_provider();
     let upstream = CountingServer::start(
         1,
         ResponseSpec::new(
@@ -649,6 +651,7 @@ async fn proxy_forwards_http_request_via_absolute_form() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn proxy_authorization_header_is_forwarded() {
+    support::install_crypto_provider();
     let upstream = CountingServer::start(
         1,
         ResponseSpec::new(
@@ -684,6 +687,7 @@ async fn proxy_authorization_header_is_forwarded() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn no_proxy_bypasses_proxy_for_matching_host() {
+    support::install_crypto_provider();
     let upstream = CountingServer::start(
         1,
         ResponseSpec::new(
@@ -720,6 +724,7 @@ async fn no_proxy_bypasses_proxy_for_matching_host() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn max_in_flight_enforces_single_active_request() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         3,
         ResponseSpec::new(
@@ -767,6 +772,7 @@ async fn max_in_flight_enforces_single_active_request() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tracing_instrumentation_does_not_panic_under_concurrent_abort() {
+    support::install_crypto_provider();
     install_test_tracing_registry();
 
     let reserved = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
@@ -823,6 +829,7 @@ async fn tracing_instrumentation_does_not_panic_under_concurrent_abort() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn max_in_flight_stream_holds_permit_until_stream_is_dropped() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         2,
         ResponseSpec::new(
@@ -876,6 +883,7 @@ async fn max_in_flight_stream_holds_permit_until_stream_is_dropped() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn max_in_flight_stream_into_response_holds_permit_until_buffering_finishes() {
+    support::install_crypto_provider();
     let server = DelayedBodyServer::start(
         2,
         ResponseSpec::new(
@@ -946,6 +954,7 @@ async fn max_in_flight_stream_into_response_holds_permit_until_buffering_finishe
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn max_in_flight_queue_wait_respects_total_timeout_deadline() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         1,
         ResponseSpec::new(
@@ -991,6 +1000,7 @@ async fn max_in_flight_queue_wait_respects_total_timeout_deadline() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn total_timeout_includes_global_queue_wait_before_send_loop() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         2,
         ResponseSpec::new(
@@ -1055,6 +1065,7 @@ async fn total_timeout_includes_global_queue_wait_before_send_loop() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn adaptive_concurrency_queue_wait_respects_total_timeout_deadline() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         1,
         ResponseSpec::new(
@@ -1114,6 +1125,7 @@ async fn adaptive_concurrency_queue_wait_respects_total_timeout_deadline() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn max_in_flight_per_host_limits_each_host_independently() {
+    support::install_crypto_provider();
     let server_a = CountingServer::start(
         2,
         ResponseSpec::new(
@@ -1192,6 +1204,7 @@ async fn max_in_flight_per_host_limits_each_host_independently() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn max_in_flight_per_host_distinguishes_same_host_different_ports() {
+    support::install_crypto_provider();
     let server_a = CountingServer::start(
         2,
         ResponseSpec::new(
@@ -1269,6 +1282,7 @@ async fn max_in_flight_per_host_distinguishes_same_host_different_ports() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn max_in_flight_per_host_applies_to_redirect_target_host() {
+    support::install_crypto_provider();
     let target = CountingServer::start(
         4,
         ResponseSpec::new(
@@ -1351,6 +1365,7 @@ async fn max_in_flight_per_host_applies_to_redirect_target_host() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn total_timeout_interrupts_retry_loop_with_retry_after() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         1,
         ResponseSpec::new(
@@ -1393,6 +1408,7 @@ async fn total_timeout_interrupts_retry_loop_with_retry_after() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn max_response_body_limit_returns_specific_error() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         1,
         ResponseSpec::new(
@@ -1429,6 +1445,7 @@ async fn max_response_body_limit_returns_specific_error() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retry_classifier_can_disable_retries() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         1,
         ResponseSpec::new(
@@ -1465,6 +1482,7 @@ async fn retry_classifier_can_disable_retries() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn permissive_retry_eligibility_retries_post_without_idempotency_key() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         2,
         ResponseSpec::new(
@@ -1505,6 +1523,7 @@ async fn permissive_retry_eligibility_retries_post_without_idempotency_key() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retry_budget_exhausted_stops_retry_loop_early() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         2,
         ResponseSpec::new(
@@ -1550,6 +1569,7 @@ async fn retry_budget_exhausted_stops_retry_loop_early() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retry_budget_stream_body_failure_does_not_credit_success() {
+    support::install_crypto_provider();
     let delayed_server = DelayedBodyServer::start(
         1,
         ResponseSpec::new(
@@ -1627,6 +1647,7 @@ async fn retry_budget_stream_body_failure_does_not_credit_success() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn circuit_breaker_short_circuits_after_opening() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         1,
         ResponseSpec::new(
@@ -1677,6 +1698,7 @@ async fn circuit_breaker_short_circuits_after_opening() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn circuit_breaker_stream_body_failure_opens_circuit() {
+    support::install_crypto_provider();
     let delayed_server = DelayedBodyServer::start(
         1,
         ResponseSpec::new(
@@ -1749,6 +1771,7 @@ async fn circuit_breaker_stream_body_failure_opens_circuit() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn circuit_breaker_does_not_open_on_local_host_limiter_timeout() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         2,
         ResponseSpec::new(
@@ -1805,6 +1828,7 @@ async fn circuit_breaker_does_not_open_on_local_host_limiter_timeout() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn circuit_breaker_open_state_bypasses_adaptive_queue_wait() {
+    support::install_crypto_provider();
     let held_server = DelayedBodyServer::start(
         1,
         ResponseSpec::new(
@@ -1888,6 +1912,7 @@ async fn circuit_breaker_open_state_bypasses_adaptive_queue_wait() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn circuit_breaker_error_mode_does_not_open_on_non_success_buffered() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         2,
         ResponseSpec::new(
@@ -1938,6 +1963,7 @@ async fn circuit_breaker_error_mode_does_not_open_on_non_success_buffered() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn circuit_breaker_response_mode_does_not_open_on_non_success_buffered() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         2,
         ResponseSpec::new(
@@ -1982,6 +2008,7 @@ async fn circuit_breaker_response_mode_does_not_open_on_non_success_buffered() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn circuit_breaker_response_mode_opens_on_retryable_non_success_buffered() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         1,
         ResponseSpec::new(
@@ -2029,6 +2056,7 @@ async fn circuit_breaker_response_mode_opens_on_retryable_non_success_buffered()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn circuit_breaker_response_mode_does_not_open_on_non_success_stream() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         2,
         ResponseSpec::new(
@@ -2073,6 +2101,7 @@ async fn circuit_breaker_response_mode_does_not_open_on_non_success_stream() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn circuit_breaker_response_mode_opens_on_retryable_non_success_stream() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         1,
         ResponseSpec::new(
@@ -2125,6 +2154,7 @@ async fn circuit_breaker_response_mode_opens_on_retryable_non_success_stream() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn circuit_breaker_response_mode_opens_on_dropped_retryable_non_success_stream() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         1,
         ResponseSpec::new(
@@ -2173,6 +2203,7 @@ async fn circuit_breaker_response_mode_opens_on_dropped_retryable_non_success_st
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn https_path_returns_transport_error_on_non_tls_server() {
+    support::install_crypto_provider();
     let raw_server = RawTcpServer::start(
         1,
         b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".to_vec(),
@@ -2201,6 +2232,7 @@ async fn https_path_returns_transport_error_on_non_tls_server() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn send_stream_downloads_body_without_buffered_send_path() {
+    support::install_crypto_provider();
     let payload = b"stream-response-body".to_vec();
     let server = CountingServer::start(
         1,
@@ -2235,6 +2267,7 @@ async fn send_stream_downloads_body_without_buffered_send_path() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn send_stream_into_response_limited_returns_buffered_response() {
+    support::install_crypto_provider();
     let payload = b"{\"ok\":true}".to_vec();
     let server = CountingServer::start(
         1,
@@ -2267,6 +2300,7 @@ async fn send_stream_into_response_limited_returns_buffered_response() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn send_stream_into_response_limited_enforces_limit_with_consistent_error() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         1,
         ResponseSpec::new(
@@ -2310,6 +2344,7 @@ async fn send_stream_into_response_limited_enforces_limit_with_consistent_error(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn download_to_writer_transfers_stream_bytes() {
+    support::install_crypto_provider();
     let payload = b"writer-stream-async".to_vec();
     let server = CountingServer::start(
         1,
@@ -2337,6 +2372,7 @@ async fn download_to_writer_transfers_stream_bytes() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn download_to_writer_limited_enforces_limit_with_consistent_error() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         1,
         ResponseSpec::new(

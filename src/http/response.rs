@@ -228,6 +228,7 @@ pub(crate) use async_stream::{ResponseStreamContext, StreamPermits};
     doc(cfg(any(
         feature = "blocking-tls-rustls-ring",
         feature = "blocking-tls-rustls-aws-lc-rs",
+        feature = "blocking-tls-rustls-no-provider",
         feature = "blocking-tls-native"
     )))
 )]

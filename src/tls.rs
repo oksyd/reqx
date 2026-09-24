@@ -8,7 +8,8 @@ use std::fmt;
     feature = "async-tls-rustls-no-provider",
     feature = "blocking-tls-native",
     feature = "blocking-tls-rustls-ring",
-    feature = "blocking-tls-rustls-aws-lc-rs"
+    feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-no-provider"
 ))]
 use crate::core::error::Error;
 
@@ -169,7 +170,8 @@ impl fmt::Debug for TlsOptions {
     feature = "async-tls-rustls-no-provider",
     feature = "blocking-tls-native",
     feature = "blocking-tls-rustls-ring",
-    feature = "blocking-tls-rustls-aws-lc-rs"
+    feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-no-provider"
 ))]
 pub(crate) struct TlsVersionBounds {
     pub(crate) min: Option<TlsVersion>,
@@ -195,7 +197,8 @@ impl TlsVersionBounds {
     feature = "async-tls-rustls-no-provider",
     feature = "blocking-tls-native",
     feature = "blocking-tls-rustls-ring",
-    feature = "blocking-tls-rustls-aws-lc-rs"
+    feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-no-provider"
 ))]
 pub(crate) fn tls_version_bounds(
     backend: TlsBackend,
@@ -228,7 +231,8 @@ pub(crate) fn tls_version_bounds(
     feature = "async-tls-rustls-no-provider",
     feature = "blocking-tls-native",
     feature = "blocking-tls-rustls-ring",
-    feature = "blocking-tls-rustls-aws-lc-rs"
+    feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-no-provider"
 ))]
 pub(crate) fn tls_config_error(backend: TlsBackend, message: impl Into<String>) -> Error {
     Error::TlsConfig {
@@ -245,7 +249,8 @@ pub(crate) fn tls_config_error(backend: TlsBackend, message: impl Into<String>) 
     feature = "async-tls-rustls-no-provider",
     feature = "blocking-tls-native",
     feature = "blocking-tls-rustls-ring",
-    feature = "blocking-tls-rustls-aws-lc-rs"
+    feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-no-provider"
 ))]
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
@@ -264,7 +269,8 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     feature = "async-tls-rustls-no-provider",
     feature = "blocking-tls-native",
     feature = "blocking-tls-rustls-ring",
-    feature = "blocking-tls-rustls-aws-lc-rs"
+    feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-no-provider"
 ))]
 fn contains_pem_marker(haystack: &[u8], marker: &[u8]) -> bool {
     find_subslice(haystack, marker).is_some()
@@ -278,7 +284,8 @@ fn contains_pem_marker(haystack: &[u8], marker: &[u8]) -> bool {
     feature = "async-tls-rustls-no-provider",
     feature = "blocking-tls-native",
     feature = "blocking-tls-rustls-ring",
-    feature = "blocking-tls-rustls-aws-lc-rs"
+    feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-no-provider"
 ))]
 fn is_pem_outer_padding(value: &[u8]) -> bool {
     value.iter().all(u8::is_ascii_whitespace)
@@ -292,7 +299,8 @@ fn is_pem_outer_padding(value: &[u8]) -> bool {
     feature = "async-tls-rustls-no-provider",
     feature = "blocking-tls-native",
     feature = "blocking-tls-rustls-ring",
-    feature = "blocking-tls-rustls-aws-lc-rs"
+    feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-no-provider"
 ))]
 pub(crate) fn parse_pem_certificate_blocks(
     backend: TlsBackend,
@@ -494,3 +502,16 @@ mod tests {
 
 #[cfg(test)]
 mod contract_tests;
+
+/// Resolve the application-owned provider without installing an implicit default.
+#[cfg(any(
+    feature = "async-tls-rustls-no-provider",
+    feature = "blocking-tls-rustls-no-provider"
+))]
+pub(crate) fn installed_crypto_provider()
+-> crate::Result<std::sync::Arc<rustls::crypto::CryptoProvider>> {
+    rustls::crypto::CryptoProvider::get_default().cloned().ok_or_else(|| Error::TlsBackendInit {
+        backend: TlsBackend::RustlsNoProvider.as_str(),
+        message: "no rustls CryptoProvider is installed as the process-wide default; call CryptoProvider::install_default() before building a rustls-no-provider client".to_owned(),
+    })
+}

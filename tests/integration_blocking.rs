@@ -1,5 +1,6 @@
 #![cfg(feature = "_blocking")]
 
+mod support;
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -40,6 +41,7 @@ fn expected_accept_encoding() -> Option<&'static str> {
 #[cfg(not(feature = "otel"))]
 #[test]
 fn blocking_builder_rejects_otel_when_feature_is_unavailable() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .otel_enabled(true)
         .build();
@@ -63,6 +65,7 @@ fn blocking_builder_rejects_otel_when_feature_is_unavailable() {
 #[cfg(feature = "otel")]
 #[test]
 fn blocking_builder_accepts_otel_when_feature_is_available() {
+    support::install_crypto_provider();
     Client::builder("https://api.example.com")
         .otel_enabled(true)
         .build()
@@ -719,6 +722,7 @@ fn status_text(status: u16) -> &'static str {
 
 #[test]
 fn blocking_get_json_succeeds_and_sets_accept_encoding() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/json")],
@@ -753,6 +757,7 @@ fn blocking_get_json_succeeds_and_sets_accept_encoding() {
 
 #[test]
 fn blocking_json_helper_replaces_stale_content_length_from_previous_body() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         Vec::<(String, String)>::new(),
@@ -791,6 +796,7 @@ fn blocking_json_helper_replaces_stale_content_length_from_previous_body() {
 
 #[test]
 fn blocking_request_body_ignores_default_content_length() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         Vec::<(String, String)>::new(),
@@ -825,6 +831,7 @@ fn blocking_request_body_ignores_default_content_length() {
 
 #[test]
 fn blocking_body_reader_replaces_stale_helper_content_length() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         Vec::<(String, String)>::new(),
@@ -859,6 +866,7 @@ fn blocking_body_reader_replaces_stale_helper_content_length() {
 
 #[test]
 fn blocking_body_reader_preserves_user_declared_content_length() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         Vec::<(String, String)>::new(),
@@ -892,6 +900,7 @@ fn blocking_body_reader_preserves_user_declared_content_length() {
 
 #[test]
 fn blocking_conflicting_request_framing_headers_are_rejected_before_transport() {
+    support::install_crypto_provider();
     let client = Client::builder("http://127.0.0.1:9")
         .request_timeout(Duration::from_millis(300))
         .retry_policy(RetryPolicy::disabled())
@@ -919,6 +928,7 @@ fn blocking_conflicting_request_framing_headers_are_rejected_before_transport() 
 
 #[test]
 fn blocking_invalid_content_length_is_rejected_before_transport() {
+    support::install_crypto_provider();
     let client = Client::builder("http://127.0.0.1:9")
         .request_timeout(Duration::from_millis(300))
         .retry_policy(RetryPolicy::disabled())
@@ -946,6 +956,7 @@ fn blocking_invalid_content_length_is_rejected_before_transport() {
 
 #[test]
 fn blocking_mismatched_buffered_content_length_is_rejected_before_transport() {
+    support::install_crypto_provider();
     let client = Client::builder("http://127.0.0.1:9")
         .request_timeout(Duration::from_millis(300))
         .retry_policy(RetryPolicy::disabled())
@@ -972,6 +983,7 @@ fn blocking_mismatched_buffered_content_length_is_rejected_before_transport() {
 
 #[test]
 fn blocking_interceptor_cannot_introduce_ambiguous_content_length() {
+    support::install_crypto_provider();
     struct DuplicateContentLengthInterceptor;
 
     impl Interceptor for DuplicateContentLengthInterceptor {
@@ -1004,6 +1016,7 @@ fn blocking_interceptor_cannot_introduce_ambiguous_content_length() {
 
 #[test]
 fn blocking_client_name_sets_default_user_agent_and_request_header_can_override() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(
             200,
@@ -1051,6 +1064,7 @@ fn blocking_client_name_sets_default_user_agent_and_request_header_can_override(
 
 #[test]
 fn blocking_buffered_request_accept_encoding_can_be_disabled_per_request() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/json")],
@@ -1078,6 +1092,7 @@ fn blocking_buffered_request_accept_encoding_can_be_disabled_per_request() {
 
 #[test]
 fn blocking_proxy_authorization_header_is_not_forwarded_to_origin() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         Vec::<(String, String)>::new(),
@@ -1107,6 +1122,7 @@ fn blocking_proxy_authorization_header_is_not_forwarded_to_origin() {
 
 #[test]
 fn blocking_request_path_preserves_extra_leading_slashes() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/json")],
@@ -1133,6 +1149,7 @@ fn blocking_request_path_preserves_extra_leading_slashes() {
 
 #[test]
 fn blocking_head_empty_body_with_content_encoding_is_not_decoded() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "text/plain"), ("Content-Encoding", "zstd")],
@@ -1168,6 +1185,7 @@ fn blocking_head_empty_body_with_content_encoding_is_not_decoded() {
 
 #[test]
 fn blocking_head_stream_into_response_with_content_encoding_empty_body_succeeds() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "text/plain"), ("Content-Encoding", "zstd")],
@@ -1204,6 +1222,7 @@ fn blocking_head_stream_into_response_with_content_encoding_empty_body_succeeds(
 
 #[test]
 fn blocking_zero_response_body_limit_rejects_first_buffered_or_streamed_byte() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(200, vec![("Content-Type", "text/plain")], b"x".to_vec()),
         MockResponse::new(200, vec![("Content-Type", "text/plain")], b"y".to_vec()),
@@ -1254,6 +1273,7 @@ fn blocking_zero_response_body_limit_rejects_first_buffered_or_streamed_byte() {
 
 #[test]
 fn blocking_body_reader_accepts_send_non_sync_reader() {
+    support::install_crypto_provider();
     #[derive(Default)]
     struct NonSyncReader {
         data: Vec<u8>,
@@ -1288,6 +1308,7 @@ fn blocking_body_reader_accepts_send_non_sync_reader() {
 
 #[test]
 fn blocking_retries_idempotent_post_then_succeeds() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(
             503,
@@ -1328,6 +1349,7 @@ fn blocking_retries_idempotent_post_then_succeeds() {
 
 #[test]
 fn blocking_global_rate_limit_applies_between_requests() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(200, Vec::<(String, String)>::new(), b"ok-1".to_vec()),
         MockResponse::new(200, Vec::<(String, String)>::new(), b"ok-2".to_vec()),
@@ -1364,6 +1386,7 @@ fn blocking_global_rate_limit_applies_between_requests() {
 
 #[test]
 fn blocking_retry_after_429_backpressures_following_request() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(429, vec![("Retry-After", "1")], b"busy".to_vec()),
         MockResponse::new(200, Vec::<(String, String)>::new(), b"ok".to_vec()),
@@ -1404,6 +1427,7 @@ fn blocking_retry_after_429_backpressures_following_request() {
 
 #[test]
 fn blocking_retry_after_429_auto_scope_throttles_same_host_only() {
+    support::install_crypto_provider();
     let server_a = MockServer::start(vec![
         MockResponse::new(429, vec![("Retry-After", "1")], b"busy".to_vec()),
         MockResponse::new(200, Vec::<(String, String)>::new(), b"ok-a".to_vec()),
@@ -1465,6 +1489,7 @@ fn blocking_retry_after_429_auto_scope_throttles_same_host_only() {
 
 #[test]
 fn blocking_retry_after_429_global_scope_backpressures_other_hosts() {
+    support::install_crypto_provider();
     let server_a = MockServer::start(vec![MockResponse::new(
         429,
         vec![("Retry-After", "1")],
@@ -1517,6 +1542,7 @@ fn blocking_retry_after_429_global_scope_backpressures_other_hosts() {
 
 #[test]
 fn blocking_retry_after_429_observer_receives_resolved_scope() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         429,
         vec![("Retry-After", "1"), ("X-RateLimit-Scope", "global")],
@@ -1560,6 +1586,7 @@ fn blocking_retry_after_429_observer_receives_resolved_scope() {
 
 #[test]
 fn blocking_retry_after_429_observer_receives_scope_without_rate_limiter() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         429,
         vec![("Retry-After", "1"), ("X-RateLimit-Scope", "global")],
@@ -1593,6 +1620,7 @@ fn blocking_retry_after_429_observer_receives_scope_without_rate_limiter() {
 
 #[test]
 fn blocking_max_in_flight_enforces_single_active_request() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         3,
         MockResponse::new(200, Vec::<(String, String)>::new(), b"ok".to_vec()),
@@ -1638,6 +1666,7 @@ fn blocking_max_in_flight_enforces_single_active_request() {
 
 #[test]
 fn blocking_max_in_flight_per_host_limits_each_host_independently() {
+    support::install_crypto_provider();
     let server_a = CountingServer::start(
         2,
         MockResponse::new(200, Vec::<(String, String)>::new(), b"ok-a".to_vec()),
@@ -1701,6 +1730,7 @@ fn blocking_max_in_flight_per_host_limits_each_host_independently() {
 
 #[test]
 fn blocking_status_retry_backoff_releases_per_host_in_flight_slot() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(503, Vec::<(String, String)>::new(), b"busy".to_vec()),
         MockResponse::new(200, Vec::<(String, String)>::new(), b"second".to_vec()),
@@ -1761,6 +1791,7 @@ fn blocking_status_retry_backoff_releases_per_host_in_flight_slot() {
 
 #[test]
 fn blocking_max_in_flight_queue_wait_respects_total_timeout_deadline() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         1,
         MockResponse::new(200, Vec::<(String, String)>::new(), b"ok".to_vec()),
@@ -1796,6 +1827,7 @@ fn blocking_max_in_flight_queue_wait_respects_total_timeout_deadline() {
 
 #[test]
 fn blocking_total_timeout_includes_global_queue_wait_before_send_loop() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         2,
         MockResponse::new(200, Vec::<(String, String)>::new(), b"ok".to_vec()),
@@ -1849,6 +1881,7 @@ fn blocking_total_timeout_includes_global_queue_wait_before_send_loop() {
 
 #[test]
 fn blocking_total_timeout_recomputes_transport_timeout_after_per_host_queue_wait() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(200, Vec::<(String, String)>::new(), b"held".to_vec()),
         MockResponse::delayed(
@@ -1912,6 +1945,7 @@ fn blocking_total_timeout_recomputes_transport_timeout_after_per_host_queue_wait
 
 #[test]
 fn blocking_adaptive_concurrency_queue_wait_respects_total_timeout_deadline() {
+    support::install_crypto_provider();
     let server = CountingServer::start(
         1,
         MockResponse::new(200, Vec::<(String, String)>::new(), b"ok".to_vec()),
@@ -1966,6 +2000,7 @@ fn blocking_adaptive_concurrency_queue_wait_respects_total_timeout_deadline() {
 
 #[test]
 fn blocking_retry_budget_exhausted_stops_retry_loop_early() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(
             503,
@@ -2011,6 +2046,7 @@ fn blocking_retry_budget_exhausted_stops_retry_loop_early() {
 
 #[test]
 fn blocking_retry_budget_stream_body_failure_does_not_credit_success() {
+    support::install_crypto_provider();
     let delayed_server = SplitBodyServer::start(
         200,
         Vec::<(String, String)>::new(),
@@ -2067,6 +2103,7 @@ fn blocking_retry_budget_stream_body_failure_does_not_credit_success() {
 
 #[test]
 fn blocking_retry_budget_is_credited_by_non_retryable_send_response() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(404, Vec::<(String, String)>::new(), b"not-found".to_vec()),
         MockResponse::new(503, Vec::<(String, String)>::new(), b"busy".to_vec()),
@@ -2108,6 +2145,7 @@ fn blocking_retry_budget_is_credited_by_non_retryable_send_response() {
 
 #[test]
 fn blocking_buffered_status_retry_happens_before_body_limit() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(
             503,
@@ -2140,6 +2178,7 @@ fn blocking_buffered_status_retry_happens_before_body_limit() {
 
 #[test]
 fn blocking_build_rejects_invalid_adaptive_concurrency_policy() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .adaptive_concurrency_policy(
             AdaptiveConcurrencyPolicy::standard()
@@ -2171,6 +2210,7 @@ fn blocking_build_rejects_invalid_adaptive_concurrency_policy() {
 
 #[test]
 fn blocking_build_rejects_invalid_retry_policy() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .retry_policy(RetryPolicy::standard().max_attempts(0))
         .build();
@@ -2195,6 +2235,7 @@ fn blocking_build_rejects_invalid_retry_policy() {
 
 #[test]
 fn blocking_build_rejects_invalid_retry_status_policy() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .retry_policy(RetryPolicy::standard().status_retry_window(204, 2))
         .build();
@@ -2217,6 +2258,7 @@ fn blocking_build_rejects_invalid_retry_status_policy() {
 
 #[test]
 fn blocking_build_rejects_invalid_retry_budget_policy() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .retry_budget_policy(RetryBudgetPolicy::standard().window(Duration::ZERO))
         .build();
@@ -2239,6 +2281,7 @@ fn blocking_build_rejects_invalid_retry_budget_policy() {
 
 #[test]
 fn blocking_build_rejects_invalid_timeout_config() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .connect_timeout(Duration::ZERO)
         .build();
@@ -2266,6 +2309,7 @@ fn blocking_build_rejects_invalid_timeout_config() {
 
 #[test]
 fn blocking_build_rejects_invalid_client_name() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .client_name("bad\r\nuser-agent")
         .build();
@@ -2289,6 +2333,7 @@ fn blocking_build_rejects_invalid_client_name() {
 
 #[test]
 fn blocking_build_rejects_invalid_concurrency_limit_config() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .max_in_flight(0)
         .build();
@@ -2314,6 +2359,7 @@ fn blocking_build_rejects_invalid_concurrency_limit_config() {
 
 #[test]
 fn blocking_build_accepts_zero_idle_pool_limits() {
+    support::install_crypto_provider();
     Client::builder("https://api.example.com")
         .pool_idle_timeout(Duration::ZERO)
         .pool_max_idle_per_host(0)
@@ -2324,6 +2370,7 @@ fn blocking_build_accepts_zero_idle_pool_limits() {
 
 #[test]
 fn blocking_request_rejects_invalid_retry_policy_override() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "text/plain")],
@@ -2354,6 +2401,7 @@ fn blocking_request_rejects_invalid_retry_policy_override() {
 
 #[test]
 fn blocking_request_validates_retry_policy_before_waiting_for_global_permit() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/octet-stream")],
@@ -2396,6 +2444,7 @@ fn blocking_request_validates_retry_policy_before_waiting_for_global_permit() {
 
 #[test]
 fn blocking_request_rejects_invalid_timeout_override() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "text/plain")],
@@ -2430,6 +2479,7 @@ fn blocking_request_rejects_invalid_timeout_override() {
 
 #[test]
 fn blocking_build_rejects_invalid_circuit_breaker_policy() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .circuit_breaker_policy(CircuitBreakerPolicy::standard().open_timeout(Duration::ZERO))
         .build();
@@ -2458,6 +2508,7 @@ fn blocking_build_rejects_invalid_circuit_breaker_policy() {
 
 #[test]
 fn blocking_build_rejects_invalid_rate_limit_policy() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .per_host_rate_limit_policy(RateLimitPolicy::standard().burst(0))
         .build();
@@ -2482,6 +2533,7 @@ fn blocking_build_rejects_invalid_rate_limit_policy() {
 
 #[test]
 fn blocking_circuit_breaker_short_circuits_after_opening() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         503,
         vec![("Content-Type", "application/json")],
@@ -2524,6 +2576,7 @@ fn blocking_circuit_breaker_short_circuits_after_opening() {
 
 #[test]
 fn blocking_circuit_breaker_stream_body_failure_opens_circuit() {
+    support::install_crypto_provider();
     let delayed_server = SplitBodyServer::start(
         200,
         Vec::<(String, String)>::new(),
@@ -2575,6 +2628,7 @@ fn blocking_circuit_breaker_stream_body_failure_opens_circuit() {
 
 #[test]
 fn blocking_circuit_breaker_does_not_open_on_local_host_limiter_timeout() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(200, Vec::<(String, String)>::new(), b"ok".to_vec()),
         MockResponse::new(200, Vec::<(String, String)>::new(), b"ok".to_vec()),
@@ -2621,6 +2675,7 @@ fn blocking_circuit_breaker_does_not_open_on_local_host_limiter_timeout() {
 
 #[test]
 fn blocking_circuit_breaker_open_state_bypasses_adaptive_queue_wait() {
+    support::install_crypto_provider();
     let held_server = SplitBodyServer::start(
         200,
         Vec::<(String, String)>::new(),
@@ -2689,6 +2744,7 @@ fn blocking_circuit_breaker_open_state_bypasses_adaptive_queue_wait() {
 
 #[test]
 fn blocking_circuit_breaker_error_mode_does_not_open_on_non_success_buffered() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(
             404,
@@ -2738,6 +2794,7 @@ fn blocking_circuit_breaker_error_mode_does_not_open_on_non_success_buffered() {
 
 #[test]
 fn blocking_circuit_breaker_response_mode_does_not_open_on_non_success_buffered() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(
             404,
@@ -2781,6 +2838,7 @@ fn blocking_circuit_breaker_response_mode_does_not_open_on_non_success_buffered(
 
 #[test]
 fn blocking_circuit_breaker_response_mode_opens_on_retryable_non_success_buffered() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         503,
         Vec::<(String, String)>::new(),
@@ -2820,6 +2878,7 @@ fn blocking_circuit_breaker_response_mode_opens_on_retryable_non_success_buffere
 
 #[test]
 fn blocking_circuit_breaker_response_mode_does_not_open_on_non_success_stream() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(
             404,
@@ -2863,6 +2922,7 @@ fn blocking_circuit_breaker_response_mode_does_not_open_on_non_success_stream() 
 
 #[test]
 fn blocking_circuit_breaker_response_mode_opens_on_retryable_non_success_stream() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         503,
         Vec::<(String, String)>::new(),
@@ -2906,6 +2966,7 @@ fn blocking_circuit_breaker_response_mode_opens_on_retryable_non_success_stream(
 
 #[test]
 fn blocking_circuit_breaker_response_mode_opens_on_dropped_retryable_non_success_stream() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         503,
         Vec::<(String, String)>::new(),
@@ -2946,6 +3007,7 @@ fn blocking_circuit_breaker_response_mode_opens_on_dropped_retryable_non_success
 
 #[test]
 fn blocking_tls_root_store_specific_without_roots_returns_tls_config_error() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .tls_root_store(TlsRootStore::Specific)
         .build();
@@ -2964,6 +3026,7 @@ fn blocking_tls_root_store_specific_without_roots_returns_tls_config_error() {
 
 #[test]
 fn blocking_build_rejects_invalid_base_url_early() {
+    support::install_crypto_provider();
     let result = Client::builder("ftp://api.example.com").build();
     let error = match result {
         Ok(_) => panic!("non-http base url should fail at build time"),
@@ -2980,6 +3043,7 @@ fn blocking_build_rejects_invalid_base_url_early() {
 
 #[test]
 fn blocking_build_rejects_base_url_with_query() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com/v1?token=abc").build();
     let error = match result {
         Ok(_) => panic!("base url with query should fail at build time"),
@@ -3000,6 +3064,7 @@ fn blocking_build_rejects_base_url_with_query() {
 ))]
 #[test]
 fn blocking_tls_root_store_system_accepts_custom_roots() {
+    support::install_crypto_provider();
     let custom_der = rustls_native_certs::load_native_certs()
         .certs
         .into_iter()
@@ -3019,6 +3084,7 @@ fn blocking_tls_root_store_system_accepts_custom_roots() {
 #[cfg(feature = "blocking-tls-native")]
 #[test]
 fn blocking_native_tls_system_roots_cannot_be_extended_with_custom_roots() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .tls_backend(reqx::TlsBackend::NativeTls)
         .tls_root_store(TlsRootStore::System)
@@ -3040,6 +3106,7 @@ fn blocking_native_tls_system_roots_cannot_be_extended_with_custom_roots() {
 #[cfg(feature = "blocking-tls-native")]
 #[test]
 fn blocking_native_tls_webpki_root_store_is_rejected() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .tls_backend(reqx::TlsBackend::NativeTls)
         .tls_root_store(TlsRootStore::WebPki)
@@ -3059,6 +3126,7 @@ fn blocking_native_tls_webpki_root_store_is_rejected() {
 
 #[test]
 fn blocking_custom_root_ca_requires_explicit_root_store() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .tls_root_ca_der([1_u8, 2, 3, 4])
         .build();
@@ -3079,6 +3147,7 @@ fn blocking_custom_root_ca_requires_explicit_root_store() {
 
 #[test]
 fn blocking_response_body_limit_returns_specific_error() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "text/plain")],
@@ -3111,6 +3180,7 @@ fn blocking_response_body_limit_returns_specific_error() {
 
 #[test]
 fn blocking_send_stream_downloads_body_and_status() {
+    support::install_crypto_provider();
     let payload = b"blocking-stream-ok".to_vec();
     let server = MockServer::start(vec![MockResponse::new(
         200,
@@ -3140,6 +3210,7 @@ fn blocking_send_stream_downloads_body_and_status() {
 
 #[test]
 fn blocking_send_stream_uri_exposes_raw_and_redacted_variants() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/json")],
@@ -3178,6 +3249,7 @@ fn blocking_send_stream_uri_exposes_raw_and_redacted_variants() {
 
 #[test]
 fn blocking_send_stream_drop_marks_canceled_and_releases_in_flight() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/octet-stream")],
@@ -3216,6 +3288,7 @@ fn blocking_send_stream_drop_marks_canceled_and_releases_in_flight() {
 
 #[test]
 fn blocking_read_chunk_eof_marks_success_not_canceled() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/octet-stream")],
@@ -3258,6 +3331,7 @@ fn blocking_read_chunk_eof_marks_success_not_canceled() {
 
 #[test]
 fn blocking_zero_length_read_chunk_does_not_mark_success() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/octet-stream")],
@@ -3305,6 +3379,7 @@ fn blocking_zero_length_read_chunk_does_not_mark_success() {
 
 #[test]
 fn blocking_read_trait_eof_marks_success_not_canceled() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/octet-stream")],
@@ -3339,6 +3414,7 @@ fn blocking_read_trait_eof_marks_success_not_canceled() {
 
 #[test]
 fn blocking_zero_length_read_trait_does_not_mark_success() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/octet-stream")],
@@ -3386,6 +3462,7 @@ fn blocking_zero_length_read_trait_does_not_mark_success() {
 
 #[test]
 fn blocking_read_trait_timeout_maps_to_io_timed_out() {
+    support::install_crypto_provider();
     let server = SplitBodyServer::start(
         200,
         vec![("Content-Type".to_owned(), "text/plain".to_owned())],
@@ -3427,6 +3504,7 @@ fn blocking_read_trait_timeout_maps_to_io_timed_out() {
 
 #[test]
 fn blocking_send_stream_limit_violation_uses_response_body_too_large_error() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/octet-stream")],
@@ -3465,6 +3543,7 @@ fn blocking_send_stream_limit_violation_uses_response_body_too_large_error() {
 
 #[test]
 fn blocking_send_stream_maps_body_timeout_to_response_body_phase() {
+    support::install_crypto_provider();
     let server = SplitBodyServer::start(
         200,
         vec![("Content-Type".to_owned(), "text/plain".to_owned())],
@@ -3509,6 +3588,7 @@ fn blocking_send_stream_maps_body_timeout_to_response_body_phase() {
 #[test]
 fn blocking_buffered_response_body_timeout_maps_to_deadline_exceeded_when_total_timeout_is_exhausted()
  {
+    support::install_crypto_provider();
     let server = SplitBodyServer::start(
         200,
         vec![("Content-Type".to_owned(), "application/json".to_owned())],
@@ -3538,6 +3618,7 @@ fn blocking_buffered_response_body_timeout_maps_to_deadline_exceeded_when_total_
 
 #[test]
 fn blocking_buffered_response_decode_honors_total_timeout_deadline() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/json")],
@@ -3569,6 +3650,7 @@ fn blocking_buffered_response_decode_honors_total_timeout_deadline() {
 
 #[test]
 fn blocking_custom_body_codec_cannot_bypass_response_body_limit() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/octet-stream")],
@@ -3601,6 +3683,7 @@ fn blocking_custom_body_codec_cannot_bypass_response_body_limit() {
 
 #[test]
 fn blocking_send_stream_respects_total_timeout_deadline() {
+    support::install_crypto_provider();
     let server = ChunkedBodyServer::start(
         200,
         vec![(
@@ -3636,6 +3719,7 @@ fn blocking_send_stream_respects_total_timeout_deadline() {
 
 #[test]
 fn blocking_send_stream_total_deadline_uses_runtime_clock_not_control_clock() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "text/plain")],
@@ -3662,6 +3746,7 @@ fn blocking_send_stream_total_deadline_uses_runtime_clock_not_control_clock() {
 
 #[test]
 fn blocking_send_stream_large_deadline_slack_does_not_shorten_total_timeout() {
+    support::install_crypto_provider();
     let server = SplitBodyServer::start(
         200,
         vec![(
@@ -3692,6 +3777,7 @@ fn blocking_send_stream_large_deadline_slack_does_not_shorten_total_timeout() {
 
 #[test]
 fn blocking_send_stream_large_deadline_slack_does_not_reclassify_body_timeout() {
+    support::install_crypto_provider();
     let server = SplitBodyServer::start(
         200,
         vec![(
@@ -3725,6 +3811,7 @@ fn blocking_send_stream_large_deadline_slack_does_not_reclassify_body_timeout() 
 
 #[test]
 fn blocking_read_chunk_returns_deadline_exceeded_when_read_crosses_total_timeout() {
+    support::install_crypto_provider();
     let server = ChunkedBodyServer::start(
         200,
         vec![(
@@ -3773,6 +3860,7 @@ fn blocking_read_chunk_returns_deadline_exceeded_when_read_crosses_total_timeout
 #[cfg(feature = "compression-gzip")]
 #[test]
 fn blocking_send_http_status_error_strips_decoded_encoding_headers() {
+    support::install_crypto_provider();
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     encoder
         .write_all(br#"{"error":"bad-request"}"#)
@@ -3822,6 +3910,7 @@ fn blocking_send_http_status_error_strips_decoded_encoding_headers() {
 
 #[test]
 fn blocking_send_stream_keeps_raw_bytes_and_decode_is_explicit() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(
             200,
@@ -3900,6 +3989,7 @@ fn blocking_send_stream_keeps_raw_bytes_and_decode_is_explicit() {
 #[cfg(feature = "compression-gzip")]
 #[test]
 fn blocking_send_stream_http_status_error_strips_decoded_encoding_headers() {
+    support::install_crypto_provider();
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     encoder
         .write_all(br#"{"error":"bad-request"}"#)
@@ -3949,6 +4039,7 @@ fn blocking_send_stream_http_status_error_strips_decoded_encoding_headers() {
 
 #[test]
 fn blocking_send_stream_accept_encoding_can_be_opted_in_per_request() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/octet-stream")],
@@ -3980,6 +4071,7 @@ fn blocking_send_stream_accept_encoding_can_be_opted_in_per_request() {
 
 #[test]
 fn blocking_stream_auto_accept_encoding_can_be_enabled_at_client_level() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/octet-stream")],
@@ -4011,6 +4103,7 @@ fn blocking_stream_auto_accept_encoding_can_be_enabled_at_client_level() {
 
 #[test]
 fn blocking_download_to_writer_writes_stream_without_buffering() {
+    support::install_crypto_provider();
     let payload = b"writer-stream-ok".to_vec();
     let server = MockServer::start(vec![MockResponse::new(
         200,
@@ -4035,6 +4128,7 @@ fn blocking_download_to_writer_writes_stream_without_buffering() {
 
 #[test]
 fn blocking_download_to_writer_limited_maps_limit_error() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/octet-stream")],
@@ -4070,6 +4164,7 @@ fn blocking_download_to_writer_limited_maps_limit_error() {
 
 #[test]
 fn blocking_download_to_writer_reports_write_body_error() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/octet-stream")],
@@ -4105,6 +4200,7 @@ fn blocking_download_to_writer_reports_write_body_error() {
 
 #[test]
 fn blocking_download_to_writer_flush_failure_marks_request_failed() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/octet-stream")],
@@ -4144,6 +4240,7 @@ fn blocking_download_to_writer_flush_failure_marks_request_failed() {
 
 #[test]
 fn blocking_redirect_policy_follows_relative_location() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(302, vec![("Location", "/v1/new")], b"redirect".to_vec()),
         MockResponse::new(
@@ -4174,6 +4271,7 @@ fn blocking_redirect_policy_follows_relative_location() {
 
 #[test]
 fn blocking_redirect_policy_follows_network_path_location() {
+    support::install_crypto_provider();
     let target = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/json")],
@@ -4217,6 +4315,7 @@ fn blocking_redirect_policy_follows_network_path_location() {
 
 #[test]
 fn blocking_cross_origin_redirect_drops_sensitive_custom_headers() {
+    support::install_crypto_provider();
     let target = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/json")],
@@ -4270,6 +4369,7 @@ fn blocking_cross_origin_redirect_drops_sensitive_custom_headers() {
 
 #[test]
 fn blocking_redirect_post_302_rewrites_to_get_and_drops_body() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(302, vec![("Location", "/v1/new")], b"redirect".to_vec()),
         MockResponse::new(
@@ -4303,6 +4403,7 @@ fn blocking_redirect_post_302_rewrites_to_get_and_drops_body() {
 
 #[test]
 fn blocking_redirect_303_allows_non_replayable_reader_body_when_method_changes_to_get() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(303, vec![("Location", "/v1/new")], b"redirect".to_vec()),
         MockResponse::new(200, vec![("Content-Type", "text/plain")], b"ok".to_vec()),
@@ -4332,6 +4433,7 @@ fn blocking_redirect_303_allows_non_replayable_reader_body_when_method_changes_t
 
 #[test]
 fn blocking_redirect_after_303_treats_dropped_reader_body_as_replayable() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(303, vec![("Location", "/v1/middle")], b"redirect".to_vec()),
         MockResponse::new(307, vec![("Location", "/v1/final")], b"redirect".to_vec()),
@@ -4366,6 +4468,7 @@ fn blocking_redirect_after_303_treats_dropped_reader_body_as_replayable() {
 
 #[test]
 fn blocking_redirect_307_rejects_non_replayable_reader_body() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         307,
         vec![("Location", "/v1/new")],
@@ -4396,6 +4499,7 @@ fn blocking_redirect_307_rejects_non_replayable_reader_body() {
 
 #[test]
 fn blocking_redirect_307_rejects_non_replayable_get_reader_body() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         307,
         vec![("Location", "/v1/new")],
@@ -4426,6 +4530,7 @@ fn blocking_redirect_307_rejects_non_replayable_get_reader_body() {
 
 #[test]
 fn blocking_redirect_invalid_location_redacts_sensitive_tokens_in_error() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         302,
         vec![(
@@ -4463,6 +4568,7 @@ fn blocking_redirect_invalid_location_redacts_sensitive_tokens_in_error() {
 
 #[test]
 fn blocking_redirect_network_path_location_with_empty_port_is_rejected() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         302,
         vec![("Location", "//example.com:/v1/new?token=secret#frag")],
@@ -4497,6 +4603,7 @@ fn blocking_redirect_network_path_location_with_empty_port_is_rejected() {
 
 #[test]
 fn blocking_redirect_http_location_with_userinfo_is_rejected() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         302,
         vec![(
@@ -4531,6 +4638,7 @@ fn blocking_redirect_http_location_with_userinfo_is_rejected() {
 
 #[test]
 fn blocking_redirect_non_http_location_is_rejected() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         302,
         vec![("Location", "mailto:user:pass@example.com?subject=secret")],
@@ -4565,6 +4673,7 @@ fn blocking_redirect_non_http_location_is_rejected() {
 
 #[test]
 fn blocking_absolute_request_uri_with_userinfo_is_rejected() {
+    support::install_crypto_provider();
     let client = Client::builder("https://api.example.com")
         .request_timeout(Duration::from_secs(1))
         .retry_policy(RetryPolicy::disabled())
@@ -4586,6 +4695,7 @@ fn blocking_absolute_request_uri_with_userinfo_is_rejected() {
 
 #[test]
 fn blocking_redirect_policy_none_returns_301_without_following_with_send_response() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(301, vec![("Location", "/v1/new")], b"redirect".to_vec()),
         MockResponse::new(
@@ -4617,6 +4727,7 @@ fn blocking_redirect_policy_none_returns_301_without_following_with_send_respons
 
 #[test]
 fn blocking_redirect_policy_none_returns_http_status_error_without_following() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(301, vec![("Location", "/v1/new")], b"redirect".to_vec()),
         MockResponse::new(
@@ -4651,6 +4762,7 @@ fn blocking_redirect_policy_none_returns_http_status_error_without_following() {
 
 #[test]
 fn blocking_proxy_authorization_requires_proxy_uri_credentials_for_http_proxy() {
+    support::install_crypto_provider();
     let proxy_uri: Uri = "http://127.0.0.1:1".parse().expect("parse proxy uri");
 
     let build_result = Client::builder("http://example.com")
@@ -4676,6 +4788,7 @@ fn blocking_proxy_authorization_requires_proxy_uri_credentials_for_http_proxy() 
 
 #[test]
 fn blocking_proxy_authorization_is_rejected_even_when_proxy_uri_has_credentials() {
+    support::install_crypto_provider();
     let proxy_uri: Uri = "http://user:pass@127.0.0.1:1"
         .parse()
         .expect("parse proxy uri");
@@ -4703,6 +4816,7 @@ fn blocking_proxy_authorization_is_rejected_even_when_proxy_uri_has_credentials(
 
 #[test]
 fn blocking_proxy_authorization_without_http_proxy_is_rejected_at_build() {
+    support::install_crypto_provider();
     let build_result = Client::builder("http://example.com")
         .try_proxy_authorization("Basic dXNlcjpwYXNz")
         .expect("valid proxy authorization header")
@@ -4722,6 +4836,7 @@ fn blocking_proxy_authorization_without_http_proxy_is_rejected_at_build() {
 
 #[test]
 fn blocking_no_proxy_bypasses_http_proxy() {
+    support::install_crypto_provider();
     let upstream = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "text/plain")],
@@ -4758,6 +4873,7 @@ fn blocking_no_proxy_bypasses_http_proxy() {
 
 #[test]
 fn blocking_https_proxy_authorization_requires_proxy_uri_credentials() {
+    support::install_crypto_provider();
     let proxy_uri: Uri = "http://127.0.0.1:1".parse().expect("parse proxy uri");
 
     let build_result = Client::builder("https://example.com")
@@ -4820,6 +4936,7 @@ impl Interceptor for BlockingIdempotencyKeyRemovingInterceptor {
 
 #[test]
 fn blocking_interceptor_cannot_leave_post_retryable_after_removing_idempotency_key() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         503,
         Vec::<(String, String)>::new(),
@@ -4857,6 +4974,7 @@ fn blocking_interceptor_cannot_leave_post_retryable_after_removing_idempotency_k
 
 #[test]
 fn blocking_interceptor_can_mutate_headers_and_observe_lifecycle() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/json")],
@@ -4898,6 +5016,7 @@ fn blocking_interceptor_can_mutate_headers_and_observe_lifecycle() {
 
 #[test]
 fn blocking_interceptor_observes_response_before_decode_failure() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Encoding", "x-custom")],
@@ -4936,6 +5055,7 @@ fn blocking_interceptor_observes_response_before_decode_failure() {
 
 #[test]
 fn query_helpers_preserve_existing_wire_encoding() {
+    support::install_crypto_provider();
     for absolute in [false, true] {
         let server = MockServer::start(vec![MockResponse::new(
             200,
@@ -4963,6 +5083,7 @@ fn query_helpers_preserve_existing_wire_encoding() {
 
 #[test]
 fn range_requests_do_not_negotiate_compression() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "text/plain")],

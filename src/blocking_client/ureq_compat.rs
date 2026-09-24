@@ -1,15 +1,18 @@
+#[cfg(any(
+    feature = "blocking-tls-rustls-ring",
+    feature = "blocking-tls-rustls-aws-lc-rs"
+))]
 use std::sync::Arc;
 
 use crate::tls::TlsBackend;
 
 /// Isolates ureq's explicitly unstable rustls provider API.
 ///
-/// `Cargo.toml` pins the exact ureq release while this adapter is needed. Any
-/// ureq upgrade must compile and exercise this module's provider test.
+/// Any ureq upgrade must compile and exercise this module's provider tests.
 pub(super) fn pin_rustls_crypto_provider(
     mut builder: ureq::tls::TlsConfigBuilder,
     backend: TlsBackend,
-) -> ureq::tls::TlsConfigBuilder {
+) -> crate::Result<ureq::tls::TlsConfigBuilder> {
     #[cfg(feature = "blocking-tls-rustls-ring")]
     if backend == TlsBackend::RustlsRing {
         builder = builder
@@ -23,7 +26,21 @@ pub(super) fn pin_rustls_crypto_provider(
         ));
     }
 
-    builder
+    #[cfg(feature = "blocking-tls-rustls-no-provider")]
+    if backend == TlsBackend::RustlsNoProvider {
+        let provider = crate::tls::installed_crypto_provider()?;
+        // ureq builds its rustls config lazily and expects valid protocol settings.
+        // Validate caller-supplied providers here so errors stay in Client::build().
+        rustls::ClientConfig::builder_with_provider(provider.clone())
+            .with_protocol_versions(rustls::ALL_VERSIONS)
+            .map_err(|error| crate::Error::TlsBackendInit {
+                backend: backend.as_str(),
+                message: error.to_string(),
+            })?;
+        builder = builder.unversioned_rustls_crypto_provider(provider);
+    }
+
+    Ok(builder)
 }
 
 #[cfg(test)]

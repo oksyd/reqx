@@ -3,10 +3,12 @@ use crate::tls::{TlsBackend, TlsRootStore};
 
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
-    feature = "blocking-tls-rustls-aws-lc-rs"
+    feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-no-provider"
 ))]
 #[test]
 fn blocking_rustls_root_ca_pem_rejects_non_certificate_blocks() {
+    crate::test_support::install_crypto_provider();
     #[cfg(feature = "blocking-tls-rustls-ring")]
     let backend = TlsBackend::RustlsRing;
     #[cfg(all(
@@ -14,6 +16,12 @@ fn blocking_rustls_root_ca_pem_rejects_non_certificate_blocks() {
         feature = "blocking-tls-rustls-aws-lc-rs"
     ))]
     let backend = TlsBackend::RustlsAwsLcRs;
+    #[cfg(all(
+        not(feature = "blocking-tls-rustls-ring"),
+        not(feature = "blocking-tls-rustls-aws-lc-rs"),
+        feature = "blocking-tls-rustls-no-provider"
+    ))]
+    let backend = TlsBackend::RustlsNoProvider;
 
     let result = crate::blocking_client::Client::builder("https://api.example.com")
         .tls_backend(backend)
@@ -38,6 +46,7 @@ fn blocking_rustls_root_ca_pem_rejects_non_certificate_blocks() {
 #[cfg(feature = "blocking-tls-native")]
 #[test]
 fn blocking_native_tls_webpki_root_store_is_rejected() {
+    crate::test_support::install_crypto_provider();
     let result = crate::blocking_client::Client::builder("https://api.example.com")
         .tls_backend(TlsBackend::NativeTls)
         .tls_root_store(TlsRootStore::WebPki)
@@ -57,6 +66,7 @@ fn blocking_native_tls_webpki_root_store_is_rejected() {
 #[cfg(feature = "_blocking")]
 #[test]
 fn blocking_try_add_no_proxy_rejects_invalid_rule() {
+    crate::test_support::install_crypto_provider();
     let result = crate::blocking_client::Client::builder("https://api.example.com")
         .try_add_no_proxy("[::1]not-a-port");
     let error = match result {
@@ -70,6 +80,7 @@ fn blocking_try_add_no_proxy_rejects_invalid_rule() {
 #[cfg(feature = "_blocking")]
 #[test]
 fn blocking_no_proxy_records_invalid_rule_and_build_fails() {
+    crate::test_support::install_crypto_provider();
     let result = crate::blocking_client::Client::builder("https://api.example.com")
         .no_proxy(["example.com", "[::1]not-a-port"])
         .build();
@@ -83,6 +94,7 @@ fn blocking_no_proxy_records_invalid_rule_and_build_fails() {
 #[cfg(feature = "_blocking")]
 #[test]
 fn blocking_no_proxy_build_error_redacts_sensitive_url_shaped_rule() {
+    crate::test_support::install_crypto_provider();
     let result = crate::blocking_client::Client::builder("https://api.example.com")
         .no_proxy(["https://user:pass@api.example.com/v1?token=secret"])
         .build();
@@ -101,6 +113,7 @@ fn blocking_no_proxy_build_error_redacts_sensitive_url_shaped_rule() {
 #[cfg(feature = "_blocking")]
 #[test]
 fn blocking_build_rejects_non_http_proxy_scheme() {
+    crate::test_support::install_crypto_provider();
     let proxy_uri: http::Uri = "https://proxy.example.com:8443"
         .parse()
         .expect("proxy uri should parse");
@@ -123,6 +136,7 @@ fn blocking_build_rejects_non_http_proxy_scheme() {
 #[cfg(feature = "_blocking")]
 #[test]
 fn blocking_build_rejects_http_proxy_uri_with_invalid_authority() {
+    crate::test_support::install_crypto_provider();
     let proxy_uri: http::Uri = "http://proxy.example.com:invalid"
         .parse()
         .expect("proxy uri should parse");
@@ -146,6 +160,7 @@ fn blocking_build_rejects_http_proxy_uri_with_invalid_authority() {
 #[cfg(feature = "_blocking")]
 #[test]
 fn blocking_build_rejects_http_proxy_uri_with_empty_port() {
+    crate::test_support::install_crypto_provider();
     let proxy_uri: http::Uri = "http://proxy.example.com:/"
         .parse()
         .expect("proxy uri should parse");

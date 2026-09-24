@@ -1,5 +1,6 @@
 #![cfg(feature = "_async")]
 
+mod support;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -690,6 +691,7 @@ fn status_text(status: u16) -> &'static str {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retries_post_with_idempotency_key_then_succeeds() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(503, vec![("Retry-After", "0")], "busy", Duration::ZERO),
         MockResponse::new(
@@ -743,6 +745,7 @@ async fn retries_post_with_idempotency_key_then_succeeds() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn post_without_idempotency_key_does_not_retry() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         500,
         Vec::<(String, String)>::new(),
@@ -781,6 +784,7 @@ async fn post_without_idempotency_key_does_not_retry() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn request_path_preserves_extra_leading_slashes() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/json")],
@@ -809,6 +813,7 @@ async fn request_path_preserves_extra_leading_slashes() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn request_timeout_reports_transport_phase() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/json")],
@@ -843,6 +848,7 @@ async fn request_timeout_reports_transport_phase() {
 #[cfg(feature = "compression-gzip")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn decodes_gzip_response_and_sets_accept_encoding() {
+    support::install_crypto_provider();
     let body = gzip_bytes(br#"{"ok":true}"#);
     let server = MockServer::start(vec![MockResponse::new_bytes(
         200,
@@ -880,6 +886,7 @@ async fn decodes_gzip_response_and_sets_accept_encoding() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_name_sets_default_user_agent_and_request_header_can_override() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(
             200,
@@ -931,6 +938,7 @@ async fn client_name_sets_default_user_agent_and_request_header_can_override() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn buffered_request_accept_encoding_can_be_disabled_per_request() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/json")],
@@ -959,6 +967,7 @@ async fn buffered_request_accept_encoding_can_be_disabled_per_request() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn head_empty_body_with_content_encoding_is_not_decoded() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new_bytes(
         200,
         vec![("Content-Type", "text/plain"), ("Content-Encoding", "zstd")],
@@ -999,6 +1008,7 @@ async fn head_empty_body_with_content_encoding_is_not_decoded() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn head_stream_into_response_with_content_encoding_empty_body_succeeds() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new_bytes(
         200,
         vec![("Content-Type", "text/plain"), ("Content-Encoding", "zstd")],
@@ -1040,6 +1050,7 @@ async fn head_stream_into_response_with_content_encoding_empty_body_succeeds() {
 #[cfg(feature = "compression-gzip")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn decoded_gzip_response_still_respects_max_body_limit() {
+    support::install_crypto_provider();
     let expanded = vec![b'a'; 16 * 1024];
     let body = gzip_bytes(&expanded);
     let server = MockServer::start(vec![MockResponse::new_bytes(
@@ -1077,6 +1088,7 @@ async fn decoded_gzip_response_still_respects_max_body_limit() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn zero_response_body_limit_rejects_first_buffered_or_streamed_byte() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(
             200,
@@ -1141,6 +1153,7 @@ async fn zero_response_body_limit_rejects_first_buffered_or_streamed_byte() {
 #[cfg(feature = "compression-gzip")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_http_status_error_strips_decoded_encoding_headers() {
+    support::install_crypto_provider();
     let body = gzip_bytes(br#"{"error":"bad-request"}"#);
     let server = MockServer::start(vec![MockResponse::new_bytes(
         400,
@@ -1189,6 +1202,7 @@ async fn send_http_status_error_strips_decoded_encoding_headers() {
 #[cfg(feature = "compression-gzip")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stream_into_response_limited_respects_decode_limit() {
+    support::install_crypto_provider();
     let expanded = vec![b'b'; 16 * 1024];
     let body = gzip_bytes(&expanded);
     let server = MockServer::start(vec![MockResponse::new_bytes(
@@ -1229,6 +1243,7 @@ async fn stream_into_response_limited_respects_decode_limit() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_stream_keeps_raw_bytes_and_decode_is_explicit() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new_bytes(
             200,
@@ -1300,6 +1315,7 @@ async fn send_stream_keeps_raw_bytes_and_decode_is_explicit() {
 #[cfg(feature = "compression-gzip")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_stream_http_status_error_strips_decoded_encoding_headers() {
+    support::install_crypto_provider();
     let body = gzip_bytes(br#"{"error":"bad-request"}"#);
     let server = MockServer::start(vec![MockResponse::new_bytes(
         400,
@@ -1347,6 +1363,7 @@ async fn send_stream_http_status_error_strips_decoded_encoding_headers() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_stream_accept_encoding_can_be_opted_in_per_request() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new_bytes(
         200,
         vec![("Content-Type", "application/octet-stream")],
@@ -1380,6 +1397,7 @@ async fn send_stream_accept_encoding_can_be_opted_in_per_request() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_stream_uri_exposes_raw_and_redacted_variants() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/json")],
@@ -1416,6 +1434,7 @@ async fn send_stream_uri_exposes_raw_and_redacted_variants() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_stream_drop_marks_canceled_and_releases_in_flight() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new_bytes(
         200,
         vec![("Content-Type", "application/octet-stream")],
@@ -1457,6 +1476,7 @@ async fn send_stream_drop_marks_canceled_and_releases_in_flight() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stream_auto_accept_encoding_can_be_enabled_at_client_level() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new_bytes(
         200,
         vec![("Content-Type", "application/octet-stream")],
@@ -1496,6 +1516,7 @@ struct SearchParams<'a> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn query_helpers_append_encoded_query_pairs() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/json")],
@@ -1549,6 +1570,7 @@ struct LoginPayload<'a> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn form_helper_sets_content_type_and_encoded_body() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         Vec::<(String, String)>::new(),
@@ -1592,6 +1614,7 @@ async fn form_helper_sets_content_type_and_encoded_body() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn json_helper_replaces_stale_content_length_from_previous_body() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         Vec::<(String, String)>::new(),
@@ -1631,6 +1654,7 @@ async fn json_helper_replaces_stale_content_length_from_previous_body() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn request_body_ignores_default_content_length() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         Vec::<(String, String)>::new(),
@@ -1666,6 +1690,7 @@ async fn request_body_ignores_default_content_length() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn body_stream_replaces_stale_content_length_from_previous_reader_body() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         Vec::<(String, String)>::new(),
@@ -1705,6 +1730,7 @@ async fn body_stream_replaces_stale_content_length_from_previous_reader_body() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn body_reader_preserves_user_declared_content_length() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         Vec::<(String, String)>::new(),
@@ -1741,6 +1767,7 @@ async fn body_reader_preserves_user_declared_content_length() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn body_reader_replaces_stale_helper_content_length() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         Vec::<(String, String)>::new(),
@@ -1776,6 +1803,7 @@ async fn body_reader_replaces_stale_helper_content_length() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn body_stream_uploads_chunked_data_with_declared_length() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         Vec::<(String, String)>::new(),
@@ -1816,6 +1844,7 @@ async fn body_stream_uploads_chunked_data_with_declared_length() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn conflicting_request_framing_headers_are_rejected_before_transport() {
+    support::install_crypto_provider();
     let client = Client::builder("http://127.0.0.1:9")
         .request_timeout(Duration::from_millis(300))
         .retry_policy(RetryPolicy::disabled())
@@ -1844,6 +1873,7 @@ async fn conflicting_request_framing_headers_are_rejected_before_transport() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn invalid_content_length_is_rejected_before_transport() {
+    support::install_crypto_provider();
     let client = Client::builder("http://127.0.0.1:9")
         .request_timeout(Duration::from_millis(300))
         .retry_policy(RetryPolicy::disabled())
@@ -1872,6 +1902,7 @@ async fn invalid_content_length_is_rejected_before_transport() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mismatched_buffered_content_length_is_rejected_before_transport() {
+    support::install_crypto_provider();
     let client = Client::builder("http://127.0.0.1:9")
         .request_timeout(Duration::from_millis(300))
         .retry_policy(RetryPolicy::disabled())
@@ -1899,6 +1930,7 @@ async fn mismatched_buffered_content_length_is_rejected_before_transport() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn interceptor_cannot_introduce_ambiguous_content_length() {
+    support::install_crypto_provider();
     struct DuplicateContentLengthInterceptor;
 
     impl Interceptor for DuplicateContentLengthInterceptor {
@@ -1932,6 +1964,7 @@ async fn interceptor_cannot_introduce_ambiguous_content_length() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn proxy_authorization_header_is_not_forwarded_to_origin() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         Vec::<(String, String)>::new(),
@@ -1962,6 +1995,7 @@ async fn proxy_authorization_header_is_not_forwarded_to_origin() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn global_rate_limit_applies_between_parallel_requests() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(200, Vec::<(String, String)>::new(), "ok-1", Duration::ZERO),
         MockResponse::new(200, Vec::<(String, String)>::new(), "ok-2", Duration::ZERO),
@@ -1995,6 +2029,7 @@ async fn global_rate_limit_applies_between_parallel_requests() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_retry_backoff_releases_per_host_in_flight_slot() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(503, Vec::<(String, String)>::new(), "busy", Duration::ZERO),
         MockResponse::new(
@@ -2065,6 +2100,7 @@ async fn status_retry_backoff_releases_per_host_in_flight_slot() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retry_after_429_backpressures_following_request() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(429, vec![("Retry-After", "1")], "busy", Duration::ZERO),
         MockResponse::new(200, Vec::<(String, String)>::new(), "ok", Duration::ZERO),
@@ -2106,6 +2142,7 @@ async fn retry_after_429_backpressures_following_request() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retry_after_429_auto_scope_throttles_same_host_only() {
+    support::install_crypto_provider();
     let server_a = MockServer::start(vec![
         MockResponse::new(429, vec![("Retry-After", "1")], "busy", Duration::ZERO),
         MockResponse::new(200, Vec::<(String, String)>::new(), "ok-a", Duration::ZERO),
@@ -2172,6 +2209,7 @@ async fn retry_after_429_auto_scope_throttles_same_host_only() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retry_after_429_global_scope_backpressures_other_hosts() {
+    support::install_crypto_provider();
     let server_a = MockServer::start(vec![MockResponse::new(
         429,
         vec![("Retry-After", "1")],
@@ -2228,6 +2266,7 @@ async fn retry_after_429_global_scope_backpressures_other_hosts() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retry_after_429_observer_receives_resolved_scope() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         429,
         vec![("Retry-After", "1"), ("X-RateLimit-Scope", "global")],
@@ -2273,6 +2312,7 @@ async fn retry_after_429_observer_receives_resolved_scope() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retry_after_429_observer_receives_scope_without_rate_limiter() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         429,
         vec![("Retry-After", "1"), ("X-RateLimit-Scope", "global")],
@@ -2308,6 +2348,7 @@ async fn retry_after_429_observer_receives_scope_without_rate_limiter() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn response_body_timeout_reports_phase_and_metrics() {
+    support::install_crypto_provider();
     let server = SplitBodyServer::start(
         200,
         vec![("Content-Type".to_owned(), "application/json".to_owned())],
@@ -2349,6 +2390,7 @@ async fn response_body_timeout_reports_phase_and_metrics() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn response_body_timeout_maps_to_deadline_exceeded_when_total_timeout_is_exhausted() {
+    support::install_crypto_provider();
     let server = SplitBodyServer::start(
         200,
         vec![("Content-Type".to_owned(), "application/json".to_owned())],
@@ -2378,6 +2420,7 @@ async fn response_body_timeout_maps_to_deadline_exceeded_when_total_timeout_is_e
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn buffered_response_decode_honors_total_timeout_deadline() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/json")],
@@ -2410,6 +2453,7 @@ async fn buffered_response_decode_honors_total_timeout_deadline() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn custom_body_codec_cannot_bypass_response_body_limit() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/octet-stream")],
@@ -2444,6 +2488,7 @@ async fn custom_body_codec_cannot_bypass_response_body_limit() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_stream_copy_to_writer_reports_response_body_timeout() {
+    support::install_crypto_provider();
     let server = SplitBodySequenceServer::start(vec![
         SplitBodyResponse::new(
             200,
@@ -2511,6 +2556,7 @@ async fn send_stream_copy_to_writer_reports_response_body_timeout() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_stream_copy_to_writer_reports_write_body_error() {
+    support::install_crypto_provider();
     let server = SplitBodyServer::start(
         200,
         vec![(
@@ -2553,6 +2599,7 @@ async fn send_stream_copy_to_writer_reports_write_body_error() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_stream_copy_to_writer_respects_total_timeout_deadline() {
+    support::install_crypto_provider();
     let server = ChunkedBodyServer::start(
         200,
         vec![(
@@ -2589,6 +2636,7 @@ async fn send_stream_copy_to_writer_respects_total_timeout_deadline() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_stream_ready_body_after_total_timeout_returns_deadline_exceeded() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/octet-stream")],
@@ -2623,6 +2671,7 @@ async fn send_stream_ready_body_after_total_timeout_returns_deadline_exceeded() 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_stream_total_deadline_uses_runtime_clock_not_control_clock() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "text/plain")],
@@ -2651,6 +2700,7 @@ async fn send_stream_total_deadline_uses_runtime_clock_not_control_clock() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn total_timeout_recomputes_transport_timeout_after_per_host_queue_wait() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(
             200,
@@ -2712,6 +2762,7 @@ async fn total_timeout_recomputes_transport_timeout_after_per_host_queue_wait() 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_stream_async_read_buffer_honors_total_timeout_deadline() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/octet-stream")],
@@ -2759,6 +2810,7 @@ async fn send_stream_async_read_buffer_honors_total_timeout_deadline() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_stream_large_deadline_slack_does_not_shorten_total_timeout() {
+    support::install_crypto_provider();
     let server = SplitBodyServer::start(
         200,
         vec![(
@@ -2790,6 +2842,7 @@ async fn send_stream_large_deadline_slack_does_not_shorten_total_timeout() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_stream_large_deadline_slack_does_not_reclassify_body_timeout() {
+    support::install_crypto_provider();
     let server = SplitBodyServer::start(
         200,
         vec![(
@@ -2824,6 +2877,7 @@ async fn send_stream_large_deadline_slack_does_not_reclassify_body_timeout() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_stream_into_body_collect_reports_response_body_timeout() {
+    support::install_crypto_provider();
     let server = SplitBodyServer::start(
         200,
         vec![(
@@ -2865,6 +2919,7 @@ async fn send_stream_into_body_collect_reports_response_body_timeout() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_stream_async_read_reports_unexpected_eof_for_truncated_body() {
+    support::install_crypto_provider();
     let server = TruncatedBodyServer::start(200, 6, b"ok".to_vec());
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_secs(1))
@@ -2895,6 +2950,7 @@ async fn send_stream_async_read_reports_unexpected_eof_for_truncated_body() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_stream_retries_on_non_success_response_body_timeout() {
+    support::install_crypto_provider();
     let server = SplitBodySequenceServer::start(vec![
         SplitBodyResponse::new(
             503,
@@ -2938,6 +2994,7 @@ async fn send_stream_retries_on_non_success_response_body_timeout() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn decode_content_encoding_error_is_classified() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new_bytes(
         200,
         vec![("Content-Encoding", "x-custom")],
@@ -2977,6 +3034,7 @@ async fn decode_content_encoding_error_is_classified() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn metrics_snapshot_tracks_success_and_error_buckets() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(
             200,
@@ -3048,6 +3106,7 @@ async fn metrics_snapshot_tracks_success_and_error_buckets() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn buffered_status_retry_happens_before_body_limit() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(
             503,
@@ -3082,6 +3141,7 @@ async fn buffered_status_retry_happens_before_body_limit() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn metrics_snapshot_is_noop_when_metrics_disabled() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/json")],
@@ -3116,6 +3176,7 @@ async fn metrics_snapshot_is_noop_when_metrics_disabled() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retry_budget_is_credited_by_non_retryable_send_response() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(
             404,
@@ -3164,6 +3225,7 @@ async fn retry_budget_is_credited_by_non_retryable_send_response() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn build_rejects_invalid_adaptive_concurrency_policy() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .adaptive_concurrency_policy(
             AdaptiveConcurrencyPolicy::standard()
@@ -3195,6 +3257,7 @@ async fn build_rejects_invalid_adaptive_concurrency_policy() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn build_rejects_invalid_retry_policy() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .retry_policy(RetryPolicy::standard().base_backoff(Duration::ZERO))
         .build();
@@ -3219,6 +3282,7 @@ async fn build_rejects_invalid_retry_policy() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn build_rejects_invalid_retry_status_policy() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .retry_policy(RetryPolicy::standard().retryable_status_codes([200, 503]))
         .build();
@@ -3241,6 +3305,7 @@ async fn build_rejects_invalid_retry_status_policy() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn build_rejects_invalid_retry_budget_policy() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .retry_budget_policy(RetryBudgetPolicy::standard().retry_ratio(f64::NAN))
         .build();
@@ -3268,6 +3333,7 @@ async fn build_rejects_invalid_retry_budget_policy() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn build_rejects_invalid_timeout_config() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .request_timeout(Duration::ZERO)
         .build();
@@ -3295,6 +3361,7 @@ async fn build_rejects_invalid_timeout_config() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn build_rejects_invalid_client_name() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .client_name("bad\r\nuser-agent")
         .build();
@@ -3318,6 +3385,7 @@ async fn build_rejects_invalid_client_name() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn build_rejects_invalid_concurrency_limit_config() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .max_in_flight_per_host(0)
         .build();
@@ -3343,6 +3411,7 @@ async fn build_rejects_invalid_concurrency_limit_config() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn build_accepts_zero_idle_pool_limits() {
+    support::install_crypto_provider();
     Client::builder("https://api.example.com")
         .pool_idle_timeout(Duration::ZERO)
         .pool_max_idle_per_host(0)
@@ -3352,6 +3421,7 @@ async fn build_accepts_zero_idle_pool_limits() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn request_rejects_invalid_retry_policy_override() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "text/plain")],
@@ -3384,6 +3454,7 @@ async fn request_rejects_invalid_retry_policy_override() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn request_validates_retry_policy_before_waiting_for_global_permit() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new_bytes(
         200,
         vec![("Content-Type", "application/octet-stream")],
@@ -3429,6 +3500,7 @@ async fn request_validates_retry_policy_before_waiting_for_global_permit() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn request_rejects_invalid_timeout_override() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "text/plain")],
@@ -3465,6 +3537,7 @@ async fn request_rejects_invalid_timeout_override() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn build_rejects_invalid_circuit_breaker_policy() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .circuit_breaker_policy(CircuitBreakerPolicy::standard().open_timeout(Duration::ZERO))
         .build();
@@ -3493,6 +3566,7 @@ async fn build_rejects_invalid_circuit_breaker_policy() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn build_rejects_invalid_rate_limit_policy() {
+    support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
         .global_rate_limit_policy(RateLimitPolicy::standard().requests_per_second(f64::NAN))
         .build();
@@ -3517,6 +3591,7 @@ async fn build_rejects_invalid_rate_limit_policy() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redirect_policy_follows_relative_location() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(
             302,
@@ -3553,6 +3628,7 @@ async fn redirect_policy_follows_relative_location() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redirect_policy_follows_network_path_location() {
+    support::install_crypto_provider();
     let target = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/json")],
@@ -3598,6 +3674,7 @@ async fn redirect_policy_follows_network_path_location() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cross_origin_redirect_drops_sensitive_custom_headers() {
+    support::install_crypto_provider();
     let target = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/json")],
@@ -3654,6 +3731,7 @@ async fn cross_origin_redirect_drops_sensitive_custom_headers() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redirect_post_302_rewrites_to_get_and_drops_body() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(
             302,
@@ -3693,6 +3771,7 @@ async fn redirect_post_302_rewrites_to_get_and_drops_body() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redirect_303_allows_non_replayable_stream_body_when_method_changes_to_get() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(
             303,
@@ -3735,6 +3814,7 @@ async fn redirect_303_allows_non_replayable_stream_body_when_method_changes_to_g
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redirect_after_303_treats_dropped_stream_body_as_replayable() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(
             303,
@@ -3787,6 +3867,7 @@ async fn redirect_after_303_treats_dropped_stream_body_as_replayable() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redirect_307_rejects_non_replayable_stream_body() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         307,
         vec![("Location", "/v1/new")],
@@ -3820,6 +3901,7 @@ async fn redirect_307_rejects_non_replayable_stream_body() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redirect_307_rejects_non_replayable_get_stream_body() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         307,
         vec![("Location", "/v1/new")],
@@ -3853,6 +3935,7 @@ async fn redirect_307_rejects_non_replayable_get_stream_body() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redirect_invalid_location_redacts_sensitive_tokens_in_error() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         302,
         vec![(
@@ -3891,6 +3974,7 @@ async fn redirect_invalid_location_redacts_sensitive_tokens_in_error() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redirect_network_path_location_with_empty_port_is_rejected() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         302,
         vec![("Location", "//example.com:/v1/new?token=secret#frag")],
@@ -3926,6 +4010,7 @@ async fn redirect_network_path_location_with_empty_port_is_rejected() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redirect_http_location_with_userinfo_is_rejected() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         302,
         vec![(
@@ -3961,6 +4046,7 @@ async fn redirect_http_location_with_userinfo_is_rejected() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn absolute_request_uri_with_userinfo_is_rejected() {
+    support::install_crypto_provider();
     let client = Client::builder("https://api.example.com")
         .request_timeout(Duration::from_millis(300))
         .retry_policy(RetryPolicy::disabled())
@@ -3983,6 +4069,7 @@ async fn absolute_request_uri_with_userinfo_is_rejected() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redirect_non_http_location_is_rejected() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         302,
         vec![("Location", "mailto:user:pass@example.com?subject=secret")],
@@ -4055,6 +4142,7 @@ impl Interceptor for IdempotencyKeyRemovingInterceptor {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn interceptor_cannot_leave_post_retryable_after_removing_idempotency_key() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         503,
         Vec::<(String, String)>::new(),
@@ -4094,6 +4182,7 @@ async fn interceptor_cannot_leave_post_retryable_after_removing_idempotency_key(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn interceptor_can_mutate_headers_and_observe_lifecycle() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "application/json")],
@@ -4138,6 +4227,7 @@ async fn interceptor_can_mutate_headers_and_observe_lifecycle() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn interceptor_on_error_is_invoked_for_decode_failure() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new_bytes(
         200,
         vec![("Content-Encoding", "x-custom")],
@@ -4178,6 +4268,7 @@ async fn interceptor_on_error_is_invoked_for_decode_failure() {
 
 #[tokio::test]
 async fn query_helpers_preserve_existing_wire_encoding() {
+    support::install_crypto_provider();
     for absolute in [false, true] {
         let server = MockServer::start(vec![MockResponse::new(
             200,
@@ -4207,6 +4298,7 @@ async fn query_helpers_preserve_existing_wire_encoding() {
 
 #[tokio::test]
 async fn range_requests_do_not_negotiate_compression() {
+    support::install_crypto_provider();
     let server = MockServer::start(vec![MockResponse::new(
         200,
         vec![("Content-Type", "text/plain")],

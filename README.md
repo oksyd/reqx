@@ -39,9 +39,11 @@ cargo add reqx --no-default-features --features async-tls-native,compression-gzi
 | --- | --- |
 | `async-tls-rustls-ring` | Async, rustls with `ring` (default) |
 | `async-tls-rustls-aws-lc-rs` | Async, rustls with AWS-LC |
+| `async-tls-rustls-no-provider` | Async, rustls with a caller-installed provider |
 | `async-tls-native` | Async, platform-native TLS |
 | `blocking-tls-rustls-ring` | Blocking (`ureq`), rustls with `ring` |
 | `blocking-tls-rustls-aws-lc-rs` | Blocking (`ureq`), rustls with AWS-LC |
+| `blocking-tls-rustls-no-provider` | Blocking, rustls with a caller-installed provider |
 | `blocking-tls-native` | Blocking (`ureq`), platform-native TLS |
 
 TLS backend features are additive. When several are enabled, select one with
@@ -49,6 +51,49 @@ TLS backend features are additive. When several are enabled, select one with
 default. Optional capabilities include all-codec `compression`, individual
 `compression-*` codecs, `resumable-upload`, and `otel`; enable `otel` before
 calling `.otel_enabled(true)`.
+
+### Caller-installed crypto provider
+
+Both clients can use the application's process-wide rustls provider, for example
+Graviola. Disable default features to avoid enabling `ring` through reqx:
+
+```toml
+[dependencies]
+reqx = { version = "0.2", default-features = false, features = ["async-tls-rustls-no-provider", "blocking-tls-rustls-no-provider", "compression-gzip"] }
+rustls-graviola = "0.4"
+```
+
+Install the provider once, during application startup, before building clients:
+
+```rust
+fn main() -> reqx::Result<()> {
+    rustls_graviola::default_provider()
+        .install_default()
+        .expect("install the application's rustls provider");
+
+    let _async_client = reqx::Client::builder("https://example.com")
+        .tls_backend(reqx::TlsBackend::RustlsNoProvider)
+        .build()?;
+    let _blocking_client = reqx::blocking::Client::builder("https://example.com")
+        .tls_backend(reqx::TlsBackend::RustlsNoProvider)
+        .build()?;
+    Ok(())
+}
+```
+
+Enable only the transport features you need. Each no-provider backend is the
+default when it is the only TLS backend enabled for that transport. If multiple
+backends are enabled, explicitly select `TlsBackend::RustlsNoProvider` as above;
+installing a provider does not change the priority of ring, AWS-LC, or native TLS.
+Cargo features are additive: another dependency can still enable ring or AWS-LC,
+so inspect the final application's dependency graph when excluding them matters.
+
+When using this backend, both builders return `Error::TlsBackendInit` if no
+provider is installed.
+Selecting this backend without its corresponding transport feature returns
+`Error::TlsBackendUnavailable`. The provider is process-wide, not configurable
+per client. The blocking backend retains its existing TLS-version-override
+limitations.
 
 ## Quick start
 

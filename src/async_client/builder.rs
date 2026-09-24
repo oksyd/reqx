@@ -906,6 +906,7 @@ mod tests {
 
     #[test]
     fn default_header_marks_sensitive_values_for_debug() {
+        crate::test_support::install_crypto_provider();
         let builder = ClientBuilder::new("https://api.example.com")
             .default_header(
                 AUTHORIZATION,
@@ -921,6 +922,7 @@ mod tests {
 
     #[test]
     fn concurrency_limits_reject_values_above_semaphore_capacity() {
+        crate::test_support::install_crypto_provider();
         let max = tokio::sync::Semaphore::MAX_PERMITS;
         for limit in [max + 1, usize::MAX] {
             for per_host in [false, true] {

@@ -1,4 +1,6 @@
 #![cfg(any(feature = "_async", feature = "_blocking"))]
+
+mod support;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -200,6 +202,7 @@ macro_rules! dns_suite {
 #[cfg(feature = "_async")]
 #[tokio::test]
 async fn async_dns_overrides() {
+    support::install_crypto_provider();
     macro_rules! wait {
         ($e:expr) => {
             $e.await
@@ -211,6 +214,7 @@ async fn async_dns_overrides() {
 #[cfg(feature = "_blocking")]
 #[test]
 fn blocking_dns_overrides() {
+    support::install_crypto_provider();
     macro_rules! wait {
         ($e:expr) => {
             $e

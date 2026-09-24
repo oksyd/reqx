@@ -42,7 +42,8 @@ pub(crate) fn is_tls_error(error: &(dyn std::error::Error + 'static)) -> bool {
             feature = "async-tls-rustls-aws-lc-rs",
             feature = "async-tls-rustls-no-provider",
             feature = "blocking-tls-rustls-ring",
-            feature = "blocking-tls-rustls-aws-lc-rs"
+            feature = "blocking-tls-rustls-aws-lc-rs",
+            feature = "blocking-tls-rustls-no-provider"
         ))]
         if cause.is::<rustls::Error>() {
             return true;

@@ -11,6 +11,7 @@ use crate::tls::{TlsBackend, TlsOptions};
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-no-provider",
     feature = "blocking-tls-native"
 ))]
 use crate::tls::{
@@ -31,9 +32,17 @@ const DEFAULT_TLS_BACKEND: TlsBackend = TlsBackend::RustlsAwsLcRs;
     feature = "blocking-tls-native"
 ))]
 const DEFAULT_TLS_BACKEND: TlsBackend = TlsBackend::NativeTls;
+#[cfg(all(
+    not(feature = "blocking-tls-rustls-ring"),
+    not(feature = "blocking-tls-rustls-aws-lc-rs"),
+    not(feature = "blocking-tls-native"),
+    feature = "blocking-tls-rustls-no-provider"
+))]
+const DEFAULT_TLS_BACKEND: TlsBackend = TlsBackend::RustlsNoProvider;
 #[cfg(not(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-no-provider",
     feature = "blocking-tls-native"
 )))]
 const DEFAULT_TLS_BACKEND: TlsBackend = TlsBackend::RustlsRing;
@@ -47,8 +56,7 @@ pub(super) fn backend_is_available(backend: TlsBackend) -> bool {
         TlsBackend::RustlsRing => cfg!(feature = "blocking-tls-rustls-ring"),
         TlsBackend::RustlsAwsLcRs => cfg!(feature = "blocking-tls-rustls-aws-lc-rs"),
         TlsBackend::NativeTls => cfg!(feature = "blocking-tls-native"),
-        // `async-tls-rustls-no-provider` has no blocking `ureq` counterpart.
-        TlsBackend::RustlsNoProvider => false,
+        TlsBackend::RustlsNoProvider => cfg!(feature = "blocking-tls-rustls-no-provider"),
     }
 }
 
@@ -64,6 +72,7 @@ pub(super) fn is_proxy_bypassed(proxy: &ProxyConfig, uri: &Uri) -> bool {
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-no-provider",
     feature = "blocking-tls-native"
 ))]
 fn parse_pem_certificates(
@@ -84,7 +93,8 @@ fn parse_pem_certificates(
 
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
-    feature = "blocking-tls-rustls-aws-lc-rs"
+    feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-no-provider"
 ))]
 fn load_system_root_certificates(
     backend: TlsBackend,
@@ -108,7 +118,8 @@ fn load_system_root_certificates(
 
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
-    feature = "blocking-tls-rustls-aws-lc-rs"
+    feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-no-provider"
 ))]
 fn bundled_webpki_root_certificates() -> Vec<ureq::tls::Certificate<'static>> {
     webpki_root_certs::TLS_SERVER_ROOT_CERTS
@@ -119,7 +130,8 @@ fn bundled_webpki_root_certificates() -> Vec<ureq::tls::Certificate<'static>> {
 
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
-    feature = "blocking-tls-rustls-aws-lc-rs"
+    feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-no-provider"
 ))]
 fn validate_custom_rustls_root_certificates(
     backend: TlsBackend,
@@ -158,6 +170,7 @@ fn validate_custom_native_tls_root_certificates(
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-no-provider",
     feature = "blocking-tls-native"
 ))]
 fn build_sync_tls_config(
@@ -181,13 +194,7 @@ fn build_sync_tls_config(
     let provider = match backend {
         TlsBackend::RustlsRing | TlsBackend::RustlsAwsLcRs => ureq::tls::TlsProvider::Rustls,
         TlsBackend::NativeTls => ureq::tls::TlsProvider::NativeTls,
-        // Unreachable in practice: `backend_is_available` above already
-        // rejects `RustlsNoProvider`, which has no blocking `ureq` counterpart.
-        TlsBackend::RustlsNoProvider => {
-            return Err(crate::error::Error::TlsBackendUnavailable {
-                backend: backend.as_str(),
-            });
-        }
+        TlsBackend::RustlsNoProvider => ureq::tls::TlsProvider::Rustls,
     };
 
     let mut tls_config_builder = ureq::tls::TlsConfig::builder().provider(provider);
@@ -243,9 +250,13 @@ fn build_sync_tls_config(
 
     #[cfg(any(
         feature = "blocking-tls-rustls-ring",
-        feature = "blocking-tls-rustls-aws-lc-rs"
+        feature = "blocking-tls-rustls-aws-lc-rs",
+        feature = "blocking-tls-rustls-no-provider"
     ))]
-    if matches!(backend, TlsBackend::RustlsRing | TlsBackend::RustlsAwsLcRs) {
+    if matches!(
+        backend,
+        TlsBackend::RustlsRing | TlsBackend::RustlsAwsLcRs | TlsBackend::RustlsNoProvider
+    ) {
         validate_custom_rustls_root_certificates(backend, &roots)?;
     }
 
@@ -256,7 +267,10 @@ fn build_sync_tls_config(
 
     match tls_options.root_store {
         TlsRootStore::BackendDefault => {
-            if matches!(backend, TlsBackend::RustlsRing | TlsBackend::RustlsAwsLcRs) {
+            if matches!(
+                backend,
+                TlsBackend::RustlsRing | TlsBackend::RustlsAwsLcRs | TlsBackend::RustlsNoProvider
+            ) {
                 tls_config_builder = tls_config_builder.root_certs(ureq::tls::RootCerts::WebPki);
             } else {
                 tls_config_builder =
@@ -266,7 +280,8 @@ fn build_sync_tls_config(
         TlsRootStore::WebPki => {
             #[cfg(any(
                 feature = "blocking-tls-rustls-ring",
-                feature = "blocking-tls-rustls-aws-lc-rs"
+                feature = "blocking-tls-rustls-aws-lc-rs",
+                feature = "blocking-tls-rustls-no-provider"
             ))]
             {
                 if roots.is_empty() {
@@ -281,7 +296,8 @@ fn build_sync_tls_config(
             }
             #[cfg(not(any(
                 feature = "blocking-tls-rustls-ring",
-                feature = "blocking-tls-rustls-aws-lc-rs"
+                feature = "blocking-tls-rustls-aws-lc-rs",
+                feature = "blocking-tls-rustls-no-provider"
             )))]
             {
                 return Err(crate::core::error::Error::TlsBackendUnavailable {
@@ -296,7 +312,8 @@ fn build_sync_tls_config(
             } else {
                 #[cfg(any(
                     feature = "blocking-tls-rustls-ring",
-                    feature = "blocking-tls-rustls-aws-lc-rs"
+                    feature = "blocking-tls-rustls-aws-lc-rs",
+                    feature = "blocking-tls-rustls-no-provider"
                 ))]
                 {
                     let mut combined_roots = load_system_root_certificates(backend)?;
@@ -312,7 +329,8 @@ fn build_sync_tls_config(
                 }
                 #[cfg(not(any(
                     feature = "blocking-tls-rustls-ring",
-                    feature = "blocking-tls-rustls-aws-lc-rs"
+                    feature = "blocking-tls-rustls-aws-lc-rs",
+                    feature = "blocking-tls-rustls-no-provider"
                 )))]
                 {
                     return Err(crate::core::error::Error::TlsBackendUnavailable {
@@ -363,11 +381,12 @@ fn build_sync_tls_config(
 
     #[cfg(any(
         feature = "blocking-tls-rustls-ring",
-        feature = "blocking-tls-rustls-aws-lc-rs"
+        feature = "blocking-tls-rustls-aws-lc-rs",
+        feature = "blocking-tls-rustls-no-provider"
     ))]
     {
         tls_config_builder =
-            super::ureq_compat::pin_rustls_crypto_provider(tls_config_builder, backend);
+            super::ureq_compat::pin_rustls_crypto_provider(tls_config_builder, backend)?;
     }
 
     Ok(tls_config_builder.build())
@@ -376,6 +395,7 @@ fn build_sync_tls_config(
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-no-provider",
     feature = "blocking-tls-native"
 ))]
 pub(super) fn make_agent_config(
@@ -406,6 +426,7 @@ pub(super) fn make_agent_config(
 #[cfg(not(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-no-provider",
     feature = "blocking-tls-native"
 )))]
 pub(super) fn make_agent_config(
@@ -444,7 +465,8 @@ pub(super) fn classify_ureq_transport_error(error: &ureq::Error) -> TransportErr
         ureq::Error::Tls(_) => TransportErrorKind::Tls,
         #[cfg(any(
             feature = "blocking-tls-rustls-ring",
-            feature = "blocking-tls-rustls-aws-lc-rs"
+            feature = "blocking-tls-rustls-aws-lc-rs",
+            feature = "blocking-tls-rustls-no-provider"
         ))]
         ureq::Error::Rustls(_) => TransportErrorKind::Tls,
         #[cfg(feature = "blocking-tls-native")]
@@ -454,6 +476,7 @@ pub(super) fn classify_ureq_transport_error(error: &ureq::Error) -> TransportErr
         #[cfg(any(
             feature = "blocking-tls-rustls-ring",
             feature = "blocking-tls-rustls-aws-lc-rs",
+            feature = "blocking-tls-rustls-no-provider",
             feature = "blocking-tls-native"
         ))]
         ureq::Error::Pem(_) => TransportErrorKind::Tls,
@@ -563,7 +586,8 @@ mod read_tests {
     test,
     any(
         feature = "blocking-tls-rustls-ring",
-        feature = "blocking-tls-rustls-aws-lc-rs"
+        feature = "blocking-tls-rustls-aws-lc-rs",
+        feature = "blocking-tls-rustls-no-provider"
     )
 ))]
 mod rustls_tls_config_tests {
@@ -602,8 +626,30 @@ mod rustls_tls_config_tests {
         TlsBackend::RustlsAwsLcRs
     }
 
+    #[cfg(all(
+        not(feature = "blocking-tls-rustls-ring"),
+        not(feature = "blocking-tls-rustls-aws-lc-rs"),
+        feature = "blocking-tls-rustls-no-provider"
+    ))]
+    fn test_tls_backend() -> TlsBackend {
+        TlsBackend::RustlsNoProvider
+    }
+
+    #[cfg(feature = "blocking-tls-rustls-no-provider")]
+    #[test]
+    fn no_provider_backend_preserves_installed_provider_identity() {
+        crate::test_support::install_crypto_provider();
+        let config = build_sync_tls_config(TlsBackend::RustlsNoProvider, &TlsOptions::default())
+            .expect("custom provider TLS config");
+        let configured = super::super::ureq_compat::configured_rustls_crypto_provider(&config)
+            .expect("explicit provider on ureq config");
+        let installed = rustls::crypto::CryptoProvider::get_default().expect("installed provider");
+        assert!(std::ptr::eq(configured, installed.as_ref()));
+    }
+
     #[test]
     fn rustls_backend_pins_crypto_provider() {
+        crate::test_support::install_crypto_provider();
         let backend = test_tls_backend();
         let config = build_sync_tls_config(backend, &TlsOptions::default())
             .expect("rustls TLS config should build");
@@ -622,10 +668,15 @@ mod rustls_tls_config_tests {
                 &rustls::crypto::aws_lc_rs::default_provider(),
             );
         }
+        #[cfg(feature = "blocking-tls-rustls-no-provider")]
+        if backend == TlsBackend::RustlsNoProvider {
+            assert_crypto_provider_matches(configured, &rustls_graviola::default_provider());
+        }
     }
 
     #[test]
     fn webpki_root_store_appends_custom_roots() {
+        crate::test_support::install_crypto_provider();
         let custom_root = webpki_root_certs::TLS_SERVER_ROOT_CERTS[0]
             .as_ref()
             .to_vec();
@@ -651,6 +702,7 @@ mod rustls_tls_config_tests {
 
     #[test]
     fn webpki_root_store_rejects_invalid_custom_root() {
+        crate::test_support::install_crypto_provider();
         let options = TlsOptions {
             root_store: TlsRootStore::WebPki,
             root_certificates: vec![TlsRootCertificate::Der(vec![1, 2, 3, 4])],
@@ -677,6 +729,7 @@ mod native_tls_config_tests {
 
     #[test]
     fn native_tls_backend_default_uses_platform_roots() {
+        crate::test_support::install_crypto_provider();
         let config = build_sync_tls_config(TlsBackend::NativeTls, &TlsOptions::default())
             .expect("native-tls config should build");
 
@@ -689,6 +742,7 @@ mod native_tls_config_tests {
 
     #[test]
     fn native_tls_webpki_root_store_is_rejected_before_agent_build() {
+        crate::test_support::install_crypto_provider();
         let options = TlsOptions {
             root_store: TlsRootStore::WebPki,
             ..TlsOptions::default()
@@ -707,6 +761,7 @@ mod native_tls_config_tests {
 
     #[test]
     fn native_tls_system_roots_cannot_be_extended_with_custom_roots() {
+        crate::test_support::install_crypto_provider();
         let options = TlsOptions {
             root_store: TlsRootStore::System,
             root_certificates: vec![crate::tls::TlsRootCertificate::Der(vec![1, 2, 3, 4])],
@@ -726,6 +781,7 @@ mod native_tls_config_tests {
 
     #[test]
     fn native_tls_specific_rejects_invalid_custom_root() {
+        crate::test_support::install_crypto_provider();
         let options = TlsOptions {
             root_store: TlsRootStore::Specific,
             root_certificates: vec![crate::tls::TlsRootCertificate::Der(vec![1, 2, 3, 4])],
@@ -751,7 +807,8 @@ mod transport_error_classification_tests {
 
     #[cfg(any(
         feature = "blocking-tls-rustls-ring",
-        feature = "blocking-tls-rustls-aws-lc-rs"
+        feature = "blocking-tls-rustls-aws-lc-rs",
+        feature = "blocking-tls-rustls-no-provider"
     ))]
     #[test]
     fn wrapped_tls_errors_retain_their_category() {

@@ -1,5 +1,6 @@
 #![cfg(any(feature = "_async", feature = "_blocking"))]
 
+mod support;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -83,6 +84,7 @@ impl Drop for Server {
 #[cfg(feature = "_async")]
 #[tokio::test]
 async fn async_stream_terminal_reads_release_global_and_host_capacity() {
+    support::install_crypto_provider();
     use tokio::io::AsyncReadExt;
     for per_host in [false, true] {
         for truncated in [false, true] {
@@ -126,6 +128,7 @@ async fn async_stream_terminal_reads_release_global_and_host_capacity() {
 #[cfg(feature = "_blocking")]
 #[test]
 fn blocking_stream_terminal_reads_release_global_and_host_capacity() {
+    support::install_crypto_provider();
     for per_host in [false, true] {
         for truncated in [false, true] {
             let server = Server::new(truncated);
@@ -163,6 +166,7 @@ fn blocking_stream_terminal_reads_release_global_and_host_capacity() {
 #[cfg(feature = "_async")]
 #[tokio::test]
 async fn canceling_queued_requests_records_completion_once() {
+    support::install_crypto_provider();
     use std::future::{Future, poll_fn};
     use std::task::Poll;
     for streamed in [false, true] {
@@ -211,6 +215,7 @@ async fn canceling_queued_requests_records_completion_once() {
 #[cfg(feature = "_async")]
 #[tokio::test]
 async fn canceling_transport_and_buffered_body_records_completion_once() {
+    support::install_crypto_provider();
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     struct HeadersReceived(Arc<tokio::sync::Notify>);
@@ -289,6 +294,7 @@ async fn canceling_transport_and_buffered_body_records_completion_once() {
 #[cfg(feature = "_async")]
 #[tokio::test]
 async fn async_stream_copy_deadline_covers_stalled_writes_and_flushes() {
+    support::install_crypto_provider();
     use std::pin::Pin;
     use std::task::{Context, Poll};
     use tokio::io::AsyncWrite;
@@ -369,6 +375,7 @@ async fn async_stream_copy_deadline_covers_stalled_writes_and_flushes() {
 #[cfg(feature = "_blocking")]
 #[test]
 fn blocking_stream_copy_reports_deadline_after_slow_flush() {
+    support::install_crypto_provider();
     struct SlowFlushWriter;
 
     impl Write for SlowFlushWriter {
