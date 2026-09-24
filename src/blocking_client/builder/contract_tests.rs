@@ -4,6 +4,7 @@ use crate::tls::{TlsBackend, TlsRootStore};
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-graviola",
     feature = "blocking-tls-rustls-no-provider"
 ))]
 #[test]
@@ -19,6 +20,13 @@ fn blocking_rustls_root_ca_pem_rejects_non_certificate_blocks() {
     #[cfg(all(
         not(feature = "blocking-tls-rustls-ring"),
         not(feature = "blocking-tls-rustls-aws-lc-rs"),
+        feature = "blocking-tls-rustls-graviola"
+    ))]
+    let backend = TlsBackend::RustlsGraviola;
+    #[cfg(all(
+        not(feature = "blocking-tls-rustls-ring"),
+        not(feature = "blocking-tls-rustls-aws-lc-rs"),
+        not(feature = "blocking-tls-rustls-graviola"),
         feature = "blocking-tls-rustls-no-provider"
     ))]
     let backend = TlsBackend::RustlsNoProvider;

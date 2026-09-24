@@ -448,6 +448,7 @@ impl std::fmt::Debug for StreamBody {
     doc(cfg(any(
         feature = "async-tls-rustls-ring",
         feature = "async-tls-rustls-aws-lc-rs",
+        feature = "async-tls-rustls-graviola",
         feature = "async-tls-rustls-no-provider",
         feature = "async-tls-native"
     )))

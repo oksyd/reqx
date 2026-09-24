@@ -9,6 +9,7 @@ use crate::resilience::{AdaptiveConcurrencyPolicy, CircuitBreakerPolicy, RetryBu
 #[cfg(any(
     feature = "async-tls-rustls-ring",
     feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-graviola",
     feature = "async-tls-native"
 ))]
 use crate::tls::TlsVersion;
@@ -557,7 +558,8 @@ fn custom_root_ca_requires_explicit_root_store() {
 
 #[cfg(any(
     feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs"
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-graviola"
 ))]
 #[test]
 fn async_rustls_root_ca_pem_rejects_non_certificate_blocks() {
@@ -569,6 +571,12 @@ fn async_rustls_root_ca_pem_rejects_non_certificate_blocks() {
         feature = "async-tls-rustls-aws-lc-rs"
     ))]
     let backend = TlsBackend::RustlsAwsLcRs;
+    #[cfg(all(
+        not(feature = "async-tls-rustls-ring"),
+        not(feature = "async-tls-rustls-aws-lc-rs"),
+        feature = "async-tls-rustls-graviola"
+    ))]
+    let backend = TlsBackend::RustlsGraviola;
 
     let result = Client::builder("https://api.example.com")
         .tls_backend(backend)
@@ -602,7 +610,14 @@ fn rustls_backend_rejects_pkcs12_identity_configuration() {
     let backend = Some(TlsBackend::RustlsAwsLcRs);
     #[cfg(all(
         not(feature = "async-tls-rustls-ring"),
-        not(feature = "async-tls-rustls-aws-lc-rs")
+        not(feature = "async-tls-rustls-aws-lc-rs"),
+        feature = "async-tls-rustls-graviola"
+    ))]
+    let backend = Some(TlsBackend::RustlsGraviola);
+    #[cfg(all(
+        not(feature = "async-tls-rustls-ring"),
+        not(feature = "async-tls-rustls-aws-lc-rs"),
+        not(feature = "async-tls-rustls-graviola")
     ))]
     let backend: Option<TlsBackend> = None;
 
@@ -958,4 +973,15 @@ fn selecting_native_tls_backend_returns_unavailable_when_feature_disabled() {
         }
         other => panic!("unexpected error: {other}"),
     }
+}
+
+#[cfg(feature = "async-tls-rustls-graviola")]
+#[test]
+fn selecting_tls_version_for_graviola_builds() {
+    let client = Client::builder("https://example.com")
+        .tls_backend(TlsBackend::RustlsGraviola)
+        .tls_version(TlsVersion::V1_2)
+        .build()
+        .expect("Graviola supports explicit TLS versions");
+    assert_eq!(client.tls_backend(), TlsBackend::RustlsGraviola);
 }

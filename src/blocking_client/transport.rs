@@ -11,6 +11,7 @@ use crate::tls::{TlsBackend, TlsOptions};
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-graviola",
     feature = "blocking-tls-rustls-no-provider",
     feature = "blocking-tls-native"
 ))]
@@ -36,12 +37,21 @@ const DEFAULT_TLS_BACKEND: TlsBackend = TlsBackend::NativeTls;
     not(feature = "blocking-tls-rustls-ring"),
     not(feature = "blocking-tls-rustls-aws-lc-rs"),
     not(feature = "blocking-tls-native"),
+    not(feature = "blocking-tls-rustls-graviola"),
     feature = "blocking-tls-rustls-no-provider"
 ))]
 const DEFAULT_TLS_BACKEND: TlsBackend = TlsBackend::RustlsNoProvider;
+#[cfg(all(
+    not(feature = "blocking-tls-rustls-ring"),
+    not(feature = "blocking-tls-rustls-aws-lc-rs"),
+    not(feature = "blocking-tls-native"),
+    feature = "blocking-tls-rustls-graviola"
+))]
+const DEFAULT_TLS_BACKEND: TlsBackend = TlsBackend::RustlsGraviola;
 #[cfg(not(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-graviola",
     feature = "blocking-tls-rustls-no-provider",
     feature = "blocking-tls-native"
 )))]
@@ -55,6 +65,7 @@ pub(super) fn backend_is_available(backend: TlsBackend) -> bool {
     match backend {
         TlsBackend::RustlsRing => cfg!(feature = "blocking-tls-rustls-ring"),
         TlsBackend::RustlsAwsLcRs => cfg!(feature = "blocking-tls-rustls-aws-lc-rs"),
+        TlsBackend::RustlsGraviola => cfg!(feature = "blocking-tls-rustls-graviola"),
         TlsBackend::NativeTls => cfg!(feature = "blocking-tls-native"),
         TlsBackend::RustlsNoProvider => cfg!(feature = "blocking-tls-rustls-no-provider"),
     }
@@ -72,6 +83,7 @@ pub(super) fn is_proxy_bypassed(proxy: &ProxyConfig, uri: &Uri) -> bool {
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-graviola",
     feature = "blocking-tls-rustls-no-provider",
     feature = "blocking-tls-native"
 ))]
@@ -94,6 +106,7 @@ fn parse_pem_certificates(
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-graviola",
     feature = "blocking-tls-rustls-no-provider"
 ))]
 fn load_system_root_certificates(
@@ -119,6 +132,7 @@ fn load_system_root_certificates(
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-graviola",
     feature = "blocking-tls-rustls-no-provider"
 ))]
 fn bundled_webpki_root_certificates() -> Vec<ureq::tls::Certificate<'static>> {
@@ -131,6 +145,7 @@ fn bundled_webpki_root_certificates() -> Vec<ureq::tls::Certificate<'static>> {
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-graviola",
     feature = "blocking-tls-rustls-no-provider"
 ))]
 fn validate_custom_rustls_root_certificates(
@@ -170,6 +185,7 @@ fn validate_custom_native_tls_root_certificates(
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-graviola",
     feature = "blocking-tls-rustls-no-provider",
     feature = "blocking-tls-native"
 ))]
@@ -192,7 +208,9 @@ fn build_sync_tls_config(
     }
 
     let provider = match backend {
-        TlsBackend::RustlsRing | TlsBackend::RustlsAwsLcRs => ureq::tls::TlsProvider::Rustls,
+        TlsBackend::RustlsRing | TlsBackend::RustlsAwsLcRs | TlsBackend::RustlsGraviola => {
+            ureq::tls::TlsProvider::Rustls
+        }
         TlsBackend::NativeTls => ureq::tls::TlsProvider::NativeTls,
         TlsBackend::RustlsNoProvider => ureq::tls::TlsProvider::Rustls,
     };
@@ -251,11 +269,15 @@ fn build_sync_tls_config(
     #[cfg(any(
         feature = "blocking-tls-rustls-ring",
         feature = "blocking-tls-rustls-aws-lc-rs",
+        feature = "blocking-tls-rustls-graviola",
         feature = "blocking-tls-rustls-no-provider"
     ))]
     if matches!(
         backend,
-        TlsBackend::RustlsRing | TlsBackend::RustlsAwsLcRs | TlsBackend::RustlsNoProvider
+        TlsBackend::RustlsRing
+            | TlsBackend::RustlsAwsLcRs
+            | TlsBackend::RustlsGraviola
+            | TlsBackend::RustlsNoProvider
     ) {
         validate_custom_rustls_root_certificates(backend, &roots)?;
     }
@@ -269,7 +291,10 @@ fn build_sync_tls_config(
         TlsRootStore::BackendDefault => {
             if matches!(
                 backend,
-                TlsBackend::RustlsRing | TlsBackend::RustlsAwsLcRs | TlsBackend::RustlsNoProvider
+                TlsBackend::RustlsRing
+                    | TlsBackend::RustlsAwsLcRs
+                    | TlsBackend::RustlsGraviola
+                    | TlsBackend::RustlsNoProvider
             ) {
                 tls_config_builder = tls_config_builder.root_certs(ureq::tls::RootCerts::WebPki);
             } else {
@@ -281,6 +306,7 @@ fn build_sync_tls_config(
             #[cfg(any(
                 feature = "blocking-tls-rustls-ring",
                 feature = "blocking-tls-rustls-aws-lc-rs",
+                feature = "blocking-tls-rustls-graviola",
                 feature = "blocking-tls-rustls-no-provider"
             ))]
             {
@@ -297,6 +323,7 @@ fn build_sync_tls_config(
             #[cfg(not(any(
                 feature = "blocking-tls-rustls-ring",
                 feature = "blocking-tls-rustls-aws-lc-rs",
+                feature = "blocking-tls-rustls-graviola",
                 feature = "blocking-tls-rustls-no-provider"
             )))]
             {
@@ -313,6 +340,7 @@ fn build_sync_tls_config(
                 #[cfg(any(
                     feature = "blocking-tls-rustls-ring",
                     feature = "blocking-tls-rustls-aws-lc-rs",
+                    feature = "blocking-tls-rustls-graviola",
                     feature = "blocking-tls-rustls-no-provider"
                 ))]
                 {
@@ -330,6 +358,7 @@ fn build_sync_tls_config(
                 #[cfg(not(any(
                     feature = "blocking-tls-rustls-ring",
                     feature = "blocking-tls-rustls-aws-lc-rs",
+                    feature = "blocking-tls-rustls-graviola",
                     feature = "blocking-tls-rustls-no-provider"
                 )))]
                 {
@@ -382,6 +411,7 @@ fn build_sync_tls_config(
     #[cfg(any(
         feature = "blocking-tls-rustls-ring",
         feature = "blocking-tls-rustls-aws-lc-rs",
+        feature = "blocking-tls-rustls-graviola",
         feature = "blocking-tls-rustls-no-provider"
     ))]
     {
@@ -395,6 +425,7 @@ fn build_sync_tls_config(
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-graviola",
     feature = "blocking-tls-rustls-no-provider",
     feature = "blocking-tls-native"
 ))]
@@ -426,6 +457,7 @@ pub(super) fn make_agent_config(
 #[cfg(not(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-graviola",
     feature = "blocking-tls-rustls-no-provider",
     feature = "blocking-tls-native"
 )))]
@@ -466,6 +498,7 @@ pub(super) fn classify_ureq_transport_error(error: &ureq::Error) -> TransportErr
         #[cfg(any(
             feature = "blocking-tls-rustls-ring",
             feature = "blocking-tls-rustls-aws-lc-rs",
+            feature = "blocking-tls-rustls-graviola",
             feature = "blocking-tls-rustls-no-provider"
         ))]
         ureq::Error::Rustls(_) => TransportErrorKind::Tls,
@@ -476,6 +509,7 @@ pub(super) fn classify_ureq_transport_error(error: &ureq::Error) -> TransportErr
         #[cfg(any(
             feature = "blocking-tls-rustls-ring",
             feature = "blocking-tls-rustls-aws-lc-rs",
+            feature = "blocking-tls-rustls-graviola",
             feature = "blocking-tls-rustls-no-provider",
             feature = "blocking-tls-native"
         ))]
@@ -587,6 +621,7 @@ mod read_tests {
     any(
         feature = "blocking-tls-rustls-ring",
         feature = "blocking-tls-rustls-aws-lc-rs",
+        feature = "blocking-tls-rustls-graviola",
         feature = "blocking-tls-rustls-no-provider"
     )
 ))]
@@ -629,6 +664,16 @@ mod rustls_tls_config_tests {
     #[cfg(all(
         not(feature = "blocking-tls-rustls-ring"),
         not(feature = "blocking-tls-rustls-aws-lc-rs"),
+        feature = "blocking-tls-rustls-graviola"
+    ))]
+    fn test_tls_backend() -> TlsBackend {
+        TlsBackend::RustlsGraviola
+    }
+
+    #[cfg(all(
+        not(feature = "blocking-tls-rustls-ring"),
+        not(feature = "blocking-tls-rustls-aws-lc-rs"),
+        not(feature = "blocking-tls-rustls-graviola"),
         feature = "blocking-tls-rustls-no-provider"
     ))]
     fn test_tls_backend() -> TlsBackend {
@@ -667,6 +712,10 @@ mod rustls_tls_config_tests {
                 configured,
                 &rustls::crypto::aws_lc_rs::default_provider(),
             );
+        }
+        #[cfg(feature = "blocking-tls-rustls-graviola")]
+        if backend == TlsBackend::RustlsGraviola {
+            assert_crypto_provider_matches(configured, &rustls_graviola::default_provider());
         }
         #[cfg(feature = "blocking-tls-rustls-no-provider")]
         if backend == TlsBackend::RustlsNoProvider {
@@ -808,6 +857,7 @@ mod transport_error_classification_tests {
     #[cfg(any(
         feature = "blocking-tls-rustls-ring",
         feature = "blocking-tls-rustls-aws-lc-rs",
+        feature = "blocking-tls-rustls-graviola",
         feature = "blocking-tls-rustls-no-provider"
     ))]
     #[test]

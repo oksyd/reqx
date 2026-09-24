@@ -80,11 +80,13 @@
 //!
 //! - Async + `rustls` + `ring`: `async-tls-rustls-ring`
 //! - Async + `rustls` + `aws-lc-rs`: `async-tls-rustls-aws-lc-rs`
+//! - Async + `rustls` + Graviola: `async-tls-rustls-graviola`
 //! - Async + `rustls` + a caller-installed crypto provider (e.g. the
-//!   pure-Rust `rustls-graviola`): `async-tls-rustls-no-provider`
+//!   `rustls-graviola`): `async-tls-rustls-no-provider`
 //! - Async + `native-tls`: `async-tls-native`
 //! - Blocking + `ureq` + `rustls` + `ring`: `blocking-tls-rustls-ring`
 //! - Blocking + `ureq` + `rustls` + `aws-lc-rs`: `blocking-tls-rustls-aws-lc-rs`
+//! - Blocking + `ureq` + `rustls` + Graviola: `blocking-tls-rustls-graviola`
 //! - Blocking + `ureq` + `rustls` + a caller-installed crypto provider:
 //!   `blocking-tls-rustls-no-provider`
 //! - Blocking + `ureq` + `native-tls`: `blocking-tls-native`
@@ -136,6 +138,11 @@
 //!   blocks; pass private keys through the dedicated identity key parameter.
 //! - Blocking `native-tls` cannot merge custom root CAs into the system trust
 //!   store; use [`TlsRootStore::Specific`] when adding explicit roots there.
+//! - `async-tls-rustls-graviola` and `blocking-tls-rustls-graviola` configure
+//!   Graviola directly per client, without installing a process-wide provider.
+//!   Select [`TlsBackend::RustlsGraviola`] when multiple TLS backends are enabled.
+//!   Graviola requires a supported `x86_64` or `aarch64` CPU; see its upstream
+//!   platform requirements. Use `default-features = false` to avoid enabling ring.
 //! - `async-tls-rustls-no-provider` and `blocking-tls-rustls-no-provider`
 //!   use the same application-installed provider. Set `default-features = false`
 //!   to avoid enabling ring through reqx. When other TLS features are enabled,
@@ -151,6 +158,7 @@
     not(any(
         feature = "async-tls-rustls-ring",
         feature = "async-tls-rustls-aws-lc-rs",
+        feature = "async-tls-rustls-graviola",
         feature = "async-tls-rustls-no-provider",
         feature = "async-tls-native"
     ))
@@ -162,6 +170,7 @@ compile_error!("`_async` is internal; enable an `async-tls-*` feature instead");
     not(any(
         feature = "blocking-tls-rustls-ring",
         feature = "blocking-tls-rustls-aws-lc-rs",
+        feature = "blocking-tls-rustls-graviola",
         feature = "blocking-tls-rustls-no-provider",
         feature = "blocking-tls-native"
     ))
@@ -188,6 +197,7 @@ mod upload;
     doc(cfg(any(
         feature = "async-tls-rustls-ring",
         feature = "async-tls-rustls-aws-lc-rs",
+        feature = "async-tls-rustls-graviola",
         feature = "async-tls-rustls-no-provider",
         feature = "async-tls-native"
     )))
@@ -201,6 +211,7 @@ pub use crate::http::response::Response;
     doc(cfg(any(
         feature = "async-tls-rustls-ring",
         feature = "async-tls-rustls-aws-lc-rs",
+        feature = "async-tls-rustls-graviola",
         feature = "async-tls-rustls-no-provider",
         feature = "async-tls-native"
     )))
@@ -214,6 +225,7 @@ pub use crate::tls::{TlsBackend, TlsRootStore, TlsVersion};
     doc(cfg(any(
         feature = "blocking-tls-rustls-ring",
         feature = "blocking-tls-rustls-aws-lc-rs",
+        feature = "blocking-tls-rustls-graviola",
         feature = "blocking-tls-rustls-no-provider",
         feature = "blocking-tls-native"
     )))
@@ -239,6 +251,7 @@ pub mod prelude {
         doc(cfg(any(
             feature = "async-tls-rustls-ring",
             feature = "async-tls-rustls-aws-lc-rs",
+            feature = "async-tls-rustls-graviola",
             feature = "async-tls-rustls-no-provider",
             feature = "async-tls-native"
         )))
@@ -250,6 +263,7 @@ pub mod prelude {
         doc(cfg(any(
             feature = "blocking-tls-rustls-ring",
             feature = "blocking-tls-rustls-aws-lc-rs",
+            feature = "blocking-tls-rustls-graviola",
             feature = "blocking-tls-rustls-no-provider",
             feature = "blocking-tls-native"
         )))
@@ -265,6 +279,7 @@ pub mod prelude {
         doc(cfg(any(
             feature = "async-tls-rustls-ring",
             feature = "async-tls-rustls-aws-lc-rs",
+            feature = "async-tls-rustls-graviola",
             feature = "async-tls-rustls-no-provider",
             feature = "async-tls-native"
         )))
@@ -290,6 +305,7 @@ pub mod advanced {
             any(
                 feature = "async-tls-rustls-ring",
                 feature = "async-tls-rustls-aws-lc-rs",
+                feature = "async-tls-rustls-graviola",
                 feature = "async-tls-rustls-no-provider",
                 feature = "async-tls-native"
             )

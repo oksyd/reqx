@@ -3,6 +3,7 @@ use std::time::Duration;
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-graviola",
     feature = "blocking-tls-rustls-no-provider",
     feature = "blocking-tls-native"
 ))]
@@ -44,6 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(not(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-graviola",
     feature = "blocking-tls-rustls-no-provider",
     feature = "blocking-tls-native"
 )))]

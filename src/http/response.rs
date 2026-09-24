@@ -215,6 +215,7 @@ mod blocking_stream;
     doc(cfg(any(
         feature = "async-tls-rustls-ring",
         feature = "async-tls-rustls-aws-lc-rs",
+        feature = "async-tls-rustls-graviola",
         feature = "async-tls-rustls-no-provider",
         feature = "async-tls-native"
     )))
@@ -228,6 +229,7 @@ pub(crate) use async_stream::{ResponseStreamContext, StreamPermits};
     doc(cfg(any(
         feature = "blocking-tls-rustls-ring",
         feature = "blocking-tls-rustls-aws-lc-rs",
+        feature = "blocking-tls-rustls-graviola",
         feature = "blocking-tls-rustls-no-provider",
         feature = "blocking-tls-native"
     )))

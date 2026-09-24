@@ -1,6 +1,7 @@
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
-    feature = "blocking-tls-rustls-aws-lc-rs"
+    feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-graviola"
 ))]
 use std::sync::Arc;
 
@@ -24,6 +25,12 @@ pub(super) fn pin_rustls_crypto_provider(
         builder = builder.unversioned_rustls_crypto_provider(Arc::new(
             rustls::crypto::aws_lc_rs::default_provider(),
         ));
+    }
+
+    #[cfg(feature = "blocking-tls-rustls-graviola")]
+    if backend == TlsBackend::RustlsGraviola {
+        builder = builder
+            .unversioned_rustls_crypto_provider(Arc::new(rustls_graviola::default_provider()));
     }
 
     #[cfg(feature = "blocking-tls-rustls-no-provider")]

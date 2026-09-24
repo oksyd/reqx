@@ -1,7 +1,8 @@
 #![cfg(any(
     feature = "async-tls-rustls-ring",
     feature = "async-tls-rustls-aws-lc-rs",
-    feature = "async-tls-rustls-no-provider"
+    feature = "async-tls-rustls-no-provider",
+    feature = "async-tls-rustls-graviola"
 ))]
 
 mod support;
@@ -54,6 +55,7 @@ fn test_crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
 #[cfg(all(
     not(feature = "async-tls-rustls-ring"),
     not(feature = "async-tls-rustls-aws-lc-rs"),
+    not(feature = "async-tls-rustls-graviola"),
     feature = "async-tls-rustls-no-provider"
 ))]
 fn test_tls_backend() -> TlsBackend {
@@ -63,7 +65,19 @@ fn test_tls_backend() -> TlsBackend {
 #[cfg(all(
     not(feature = "async-tls-rustls-ring"),
     not(feature = "async-tls-rustls-aws-lc-rs"),
-    feature = "async-tls-rustls-no-provider"
+    feature = "async-tls-rustls-graviola"
+))]
+fn test_tls_backend() -> TlsBackend {
+    TlsBackend::RustlsGraviola
+}
+
+#[cfg(all(
+    not(feature = "async-tls-rustls-ring"),
+    not(feature = "async-tls-rustls-aws-lc-rs"),
+    any(
+        feature = "async-tls-rustls-no-provider",
+        feature = "async-tls-rustls-graviola"
+    )
 ))]
 fn test_crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
     Arc::new(rustls_graviola::default_provider())
@@ -305,6 +319,8 @@ async fn tls_backends_negotiate_only_enabled_http_protocols() {
         TlsBackend::RustlsRing,
         #[cfg(feature = "async-tls-rustls-aws-lc-rs")]
         TlsBackend::RustlsAwsLcRs,
+        #[cfg(feature = "async-tls-rustls-graviola")]
+        TlsBackend::RustlsGraviola,
         #[cfg(feature = "async-tls-rustls-no-provider")]
         TlsBackend::RustlsNoProvider,
         #[cfg(feature = "async-tls-native")]
@@ -406,6 +422,8 @@ async fn dns_overrides_preserve_async_tls_identity() {
     backends.push(TlsBackend::RustlsRing);
     #[cfg(feature = "async-tls-rustls-aws-lc-rs")]
     backends.push(TlsBackend::RustlsAwsLcRs);
+    #[cfg(feature = "async-tls-rustls-graviola")]
+    backends.push(TlsBackend::RustlsGraviola);
     #[cfg(feature = "async-tls-rustls-no-provider")]
     backends.push(TlsBackend::RustlsNoProvider);
     #[cfg(feature = "async-tls-native")]
@@ -467,6 +485,8 @@ async fn dns_overrides_preserve_blocking_tls_identity() {
     backends.push(TlsBackend::RustlsRing);
     #[cfg(feature = "blocking-tls-rustls-aws-lc-rs")]
     backends.push(TlsBackend::RustlsAwsLcRs);
+    #[cfg(feature = "blocking-tls-rustls-graviola")]
+    backends.push(TlsBackend::RustlsGraviola);
     #[cfg(feature = "blocking-tls-rustls-no-provider")]
     backends.push(TlsBackend::RustlsNoProvider);
     #[cfg(feature = "blocking-tls-native")]

@@ -100,7 +100,8 @@ fn classify_transport_error_source_chain_prefers_structured_io_errors() {
     feature = "_async",
     any(
         feature = "async-tls-rustls-ring",
-        feature = "async-tls-rustls-aws-lc-rs"
+        feature = "async-tls-rustls-aws-lc-rs",
+        feature = "async-tls-rustls-graviola"
     )
 ))]
 #[test]
@@ -118,7 +119,8 @@ fn classify_transport_error_source_chain_detects_rustls_errors() {
     feature = "_async",
     any(
         feature = "async-tls-rustls-ring",
-        feature = "async-tls-rustls-aws-lc-rs"
+        feature = "async-tls-rustls-aws-lc-rs",
+        feature = "async-tls-rustls-graviola"
     )
 ))]
 #[test]

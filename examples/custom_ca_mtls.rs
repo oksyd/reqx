@@ -4,6 +4,7 @@ use std::time::Duration;
     feature = "async-tls-native",
     feature = "async-tls-rustls-ring",
     feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-graviola",
     feature = "async-tls-rustls-no-provider"
 ))]
 use reqx::prelude::TlsBackend;
@@ -49,6 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         not(feature = "async-tls-native"),
         not(feature = "async-tls-rustls-aws-lc-rs"),
         not(feature = "async-tls-rustls-ring"),
+        not(feature = "async-tls-rustls-graviola"),
         feature = "async-tls-rustls-no-provider"
     ))]
     {
@@ -56,6 +58,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .install_default()
             .expect("install application crypto provider");
         builder = builder.tls_backend(TlsBackend::RustlsNoProvider);
+    }
+
+    #[cfg(all(
+        not(feature = "async-tls-native"),
+        not(feature = "async-tls-rustls-aws-lc-rs"),
+        not(feature = "async-tls-rustls-ring"),
+        feature = "async-tls-rustls-graviola"
+    ))]
+    {
+        builder = builder.tls_backend(TlsBackend::RustlsGraviola);
     }
 
     let client = builder.build()?;

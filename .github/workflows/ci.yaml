@@ -107,6 +107,37 @@ jobs:
             command: |
               cargo clippy --all-targets --no-default-features --features async-tls-rustls-no-provider,blocking-tls-rustls-no-provider,compression,resumable-upload -- -D warnings
               cargo nextest run --no-default-features --features async-tls-rustls-no-provider,blocking-tls-rustls-no-provider,compression,resumable-upload
+          - name: async-graviola
+            command: |
+              cargo clippy --all-targets --no-default-features --features async-tls-rustls-graviola,compression,resumable-upload -- -D warnings
+              cargo nextest run --no-default-features --features async-tls-rustls-graviola,compression,resumable-upload
+          - name: blocking-graviola
+            command: |
+              cargo clippy --all-targets --no-default-features --features blocking-tls-rustls-graviola,compression,resumable-upload -- -D warnings
+              cargo nextest run --no-default-features --features blocking-tls-rustls-graviola,compression,resumable-upload
+          - name: hybrid-graviola
+            command: |
+              cargo clippy --all-targets --no-default-features --features async-tls-rustls-graviola,blocking-tls-rustls-graviola,compression,resumable-upload -- -D warnings
+              cargo nextest run --no-default-features --features async-tls-rustls-graviola,blocking-tls-rustls-graviola,compression,resumable-upload
+          - name: hybrid-graviola-no-provider
+            command: cargo nextest run --no-default-features --features async-tls-rustls-graviola,blocking-tls-rustls-graviola,async-tls-rustls-no-provider,blocking-tls-rustls-no-provider,compression,resumable-upload
+          - name: graviola-dependencies
+            command: |
+              graph=$(mktemp)
+              for features in async-tls-rustls-graviola blocking-tls-rustls-graviola async-tls-rustls-graviola,blocking-tls-rustls-graviola; do
+                cargo tree --no-default-features --features "$features" -e normal,build --prefix none --format '{p}' > "$graph"
+                grep -Eq '^rustls-graviola v' "$graph"
+                if grep -Eq '^(ring|aws-lc-rs|aws-lc-sys) v' "$graph"; then
+                  cat "$graph"
+                  exit 1
+                fi
+              done
+              cargo tree -e normal,build --prefix none --format '{p}' > "$graph"
+              if grep -Eq '^(graviola|rustls-graviola) v' "$graph"; then
+                cat "$graph"
+                exit 1
+              fi
+              rm "$graph"
           - name: no-provider-dependencies
             command: |
               graph=$(mktemp)
@@ -137,11 +168,11 @@ jobs:
           - name: hybrid-async-aws-lc-rs-blocking-ring
             command: cargo check --lib --tests --no-default-features --features async-tls-rustls-aws-lc-rs,blocking-tls-rustls-ring
           - name: async-all-tls-backends
-            command: cargo check --lib --tests --no-default-features --features async-tls-rustls-ring,async-tls-rustls-aws-lc-rs,async-tls-rustls-no-provider,async-tls-native
+            command: cargo check --lib --tests --no-default-features --features async-tls-rustls-ring,async-tls-rustls-aws-lc-rs,async-tls-rustls-graviola,async-tls-rustls-no-provider,async-tls-native
           - name: blocking-all-tls-backends
-            command: cargo check --lib --tests --no-default-features --features blocking-tls-rustls-ring,blocking-tls-rustls-aws-lc-rs,blocking-tls-rustls-no-provider,blocking-tls-native
+            command: cargo check --lib --tests --no-default-features --features blocking-tls-rustls-ring,blocking-tls-rustls-aws-lc-rs,blocking-tls-rustls-graviola,blocking-tls-rustls-no-provider,blocking-tls-native
           - name: all-tls-backends
-            command: cargo check --lib --tests --no-default-features --features async-tls-rustls-ring,async-tls-rustls-aws-lc-rs,async-tls-rustls-no-provider,async-tls-native,blocking-tls-rustls-ring,blocking-tls-rustls-aws-lc-rs,blocking-tls-rustls-no-provider,blocking-tls-native
+            command: cargo check --lib --tests --no-default-features --features async-tls-rustls-ring,async-tls-rustls-aws-lc-rs,async-tls-rustls-graviola,async-tls-rustls-no-provider,async-tls-native,blocking-tls-rustls-ring,blocking-tls-rustls-aws-lc-rs,blocking-tls-rustls-graviola,blocking-tls-rustls-no-provider,blocking-tls-native
           - name: no-transport
             command: cargo test --lib --no-default-features
           - name: internal-feature-guards

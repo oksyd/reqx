@@ -39,10 +39,12 @@ cargo add reqx --no-default-features --features async-tls-native,compression-gzi
 | --- | --- |
 | `async-tls-rustls-ring` | Async, rustls with `ring` (default) |
 | `async-tls-rustls-aws-lc-rs` | Async, rustls with AWS-LC |
+| `async-tls-rustls-graviola` | Async, rustls with Graviola |
 | `async-tls-rustls-no-provider` | Async, rustls with a caller-installed provider |
 | `async-tls-native` | Async, platform-native TLS |
 | `blocking-tls-rustls-ring` | Blocking (`ureq`), rustls with `ring` |
 | `blocking-tls-rustls-aws-lc-rs` | Blocking (`ureq`), rustls with AWS-LC |
+| `blocking-tls-rustls-graviola` | Blocking, rustls with Graviola |
 | `blocking-tls-rustls-no-provider` | Blocking, rustls with a caller-installed provider |
 | `blocking-tls-native` | Blocking (`ureq`), platform-native TLS |
 
@@ -51,6 +53,41 @@ TLS backend features are additive. When several are enabled, select one with
 default. Optional capabilities include all-codec `compression`, individual
 `compression-*` codecs, `resumable-upload`, and `otel`; enable `otel` before
 calling `.otel_enabled(true)`.
+
+### Graviola TLS backend
+
+Enable Graviola for either or both transports:
+
+```toml
+[dependencies]
+reqx = { version = "0.2", default-features = false, features = ["async-tls-rustls-graviola", "blocking-tls-rustls-graviola", "compression-gzip"] }
+```
+
+The Graviola backends configure their own provider for each client. They do not
+require or modify the process-wide rustls provider:
+
+```rust
+fn main() -> reqx::Result<()> {
+    let _async_client = reqx::Client::builder("https://example.com")
+        .tls_backend(reqx::TlsBackend::RustlsGraviola)
+        .build()?;
+    let _blocking_client = reqx::blocking::Client::builder("https://example.com")
+        .tls_backend(reqx::TlsBackend::RustlsGraviola)
+        .build()?;
+    Ok(())
+}
+```
+
+When Graviola is the only TLS backend for a transport, the explicit
+`.tls_backend(...)` call is optional. With multiple backends enabled, the default
+priority is ring, AWS-LC, native TLS, Graviola, then the caller-installed provider.
+Graviola is an optional dependency; the default build continues to use ring.
+
+Graviola builds without a C toolchain. Its supported architectures are `x86_64`
+and `aarch64`, with specific CPU instruction requirements; check the
+[upstream platform requirements](https://docs.rs/graviola/0.4.1/graviola/#limitations)
+for your deployment. Upload checksums and retry jitter remain independent of the
+TLS provider.
 
 ### Caller-installed crypto provider
 
@@ -84,7 +121,7 @@ fn main() -> reqx::Result<()> {
 Enable only the transport features you need. Each no-provider backend is the
 default when it is the only TLS backend enabled for that transport. If multiple
 backends are enabled, explicitly select `TlsBackend::RustlsNoProvider` as above;
-installing a provider does not change the priority of ring, AWS-LC, or native TLS.
+installing a provider does not change the priority of ring, AWS-LC, native TLS, or Graviola.
 Cargo features are additive: another dependency can still enable ring or AWS-LC,
 so inspect the final application's dependency graph when excluding them matters.
 

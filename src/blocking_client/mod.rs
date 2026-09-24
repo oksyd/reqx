@@ -30,6 +30,7 @@ pub(crate) mod transport;
 #[cfg(any(
     feature = "blocking-tls-rustls-ring",
     feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-graviola",
     feature = "blocking-tls-rustls-no-provider"
 ))]
 mod ureq_compat;
@@ -172,6 +173,7 @@ impl RequestBody {
     doc(cfg(any(
         feature = "blocking-tls-rustls-ring",
         feature = "blocking-tls-rustls-aws-lc-rs",
+        feature = "blocking-tls-rustls-graviola",
         feature = "blocking-tls-rustls-no-provider",
         feature = "blocking-tls-native"
     )))
@@ -226,6 +228,7 @@ pub struct ClientBuilder {
     doc(cfg(any(
         feature = "blocking-tls-rustls-ring",
         feature = "blocking-tls-rustls-aws-lc-rs",
+        feature = "blocking-tls-rustls-graviola",
         feature = "blocking-tls-rustls-no-provider",
         feature = "blocking-tls-native"
     )))

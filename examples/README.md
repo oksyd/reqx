@@ -79,3 +79,14 @@ cargo run --example blocking_basic --no-default-features -F blocking-tls-rustls-
 ```bash
 cargo run --example blocking_streaming --no-default-features -F blocking-tls-rustls-ring
 ```
+
+### Graviola TLS
+
+These examples configure Graviola per client without installing a global provider:
+
+```bash
+cargo run --example tls_backends --no-default-features -F async-tls-rustls-graviola
+cargo run --example blocking_streaming --no-default-features -F blocking-tls-rustls-graviola
+```
+
+Use a supported x86_64 or aarch64 CPU as documented by Graviola.
