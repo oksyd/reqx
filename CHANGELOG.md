@@ -7,6 +7,7 @@
 ### ⚙️ Miscellaneous Tasks
 
 - Update
+- Release reqx version 0.2.4
 ## [0.2.3] - 2026-09-19
 
 ### 🐛 Bug Fixes
