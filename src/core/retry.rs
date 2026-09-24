@@ -5,8 +5,8 @@ use std::time::Duration;
 use http::{HeaderMap, Method, StatusCode};
 
 use crate::IDEMPOTENCY_KEY_HEADER;
-use crate::error::{Error, TimeoutPhase, TransportErrorKind};
-use crate::util::{duration_millis_ceil, exponential_backoff_with_jitter};
+use crate::core::error::{Error, TimeoutPhase, TransportErrorKind};
+use crate::core::util::{duration_millis_ceil, exponential_backoff_with_jitter};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -613,3 +613,6 @@ mod tests {
         assert!(!decision.is_response_body_read_error());
     }
 }
+
+#[cfg(test)]
+mod contract_tests;

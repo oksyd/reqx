@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use crate::util::normalize_usize_at_least_one;
+use crate::core::util::normalize_usize_at_least_one;
 
 pub(crate) const PER_HOST_LIMITER_ENTRY_TTL: Duration = Duration::from_secs(300);
 pub(crate) const PER_HOST_LIMITER_MAX_ENTRIES: usize = 1024;

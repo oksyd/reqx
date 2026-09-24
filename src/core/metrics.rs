@@ -6,11 +6,9 @@ use std::time::{Duration, Instant};
 
 use http::Method;
 
-use crate::error::{Error, ErrorCode, TimeoutPhase, TransportErrorKind};
-use crate::otel::{OtelRequestSpan, OtelTelemetry};
-#[cfg(feature = "_blocking")]
-use crate::response::Response;
-use crate::util::lock_unpoisoned;
+use crate::core::error::{Error, ErrorCode, TimeoutPhase, TransportErrorKind};
+use crate::core::otel::{OtelRequestSpan, OtelTelemetry};
+use crate::core::util::lock_unpoisoned;
 
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
@@ -311,15 +309,9 @@ impl ClientMetrics {
     }
 
     #[cfg(feature = "_blocking")]
-    pub(crate) fn record_request_completed(
-        &self,
-        result: &Result<Response, Error>,
-        latency: Duration,
-    ) {
+    pub(crate) fn record_request_completed(&self, result: Result<u16, &Error>, latency: Duration) {
         match result {
-            Ok(response) => {
-                self.record_request_completed_success(response.status().as_u16(), latency)
-            }
+            Ok(status) => self.record_request_completed_success(status, latency),
             Err(error) => {
                 self.record_request_completed_error(error, latency);
             }
@@ -641,9 +633,9 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
-    use crate::error::ErrorCode;
-    use crate::otel::OtelTelemetry;
-    use crate::util::lock_unpoisoned;
+    use crate::core::error::ErrorCode;
+    use crate::core::otel::OtelTelemetry;
+    use crate::core::util::lock_unpoisoned;
 
     use super::{ClientMetrics, InFlightGuard};
 

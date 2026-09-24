@@ -11,16 +11,17 @@ use serde::de::DeserializeOwned;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::time::Sleep;
 
-use crate::body::decode_content_encoded_body_limited;
-use crate::content_encoding::should_decode_content_encoded_body;
-use crate::error::{Error, TimeoutPhase};
-use crate::limiters::{GlobalRequestPermit, HostRequestPermit};
-use crate::util::{duration_from_millis_saturating, saturating_u64_to_usize};
-
-use super::{
-    Response, StreamCompletion, StreamLifecycle, deadline_elapsed, deadline_limits_wait,
-    deadline_within_slack,
+use crate::async_client::limiters::{GlobalRequestPermit, HostRequestPermit};
+use crate::core::content_encoding::{
+    decode_content_encoded_body_limited, should_decode_content_encoded_body,
 };
+use crate::core::error::{Error, TimeoutPhase};
+use crate::core::util::{duration_from_millis_saturating, saturating_u64_to_usize};
+
+use crate::core::execution::lifecycle::{self, StreamLifecycle};
+use crate::core::metrics::StreamCompletion;
+
+use super::{Response, deadline_elapsed, deadline_limits_wait, deadline_within_slack};
 
 #[derive(Debug)]
 pub(crate) struct StreamPermits {
@@ -96,7 +97,7 @@ impl StreamBody {
     }
 
     fn attach_completion(&mut self, completion: StreamCompletion) {
-        super::attach_completion(&mut self.lifecycle, completion);
+        lifecycle::attach_completion(&mut self.lifecycle, completion);
     }
 
     fn method(&self) -> &http::Method {
@@ -287,28 +288,27 @@ impl StreamBody {
         Ok(Bytes::from(collected))
     }
 
-    async fn write_chunk<W>(&mut self, writer: &mut W, chunk: &[u8]) -> crate::Result<()>
-    where
-        W: AsyncWrite + Unpin + Send + ?Sized,
-    {
-        if let Err(source) = writer.write_all(chunk).await {
-            let error = self.write_error(source);
-            self.complete_error(&error);
-            return Err(error);
+    async fn write_with_deadline(
+        &mut self,
+        operation: impl Future<Output = io::Result<()>>,
+    ) -> crate::Result<()> {
+        let result = async {
+            self.ensure_within_deadline()?;
+            let result = if let Some(deadline_at) = self.deadline_at {
+                tokio::time::timeout_at(tokio::time::Instant::from_std(deadline_at), operation)
+                    .await
+                    .map_err(|_| self.deadline_exceeded_error())?
+            } else {
+                operation.await
+            };
+            result.map_err(|source| self.write_error(source))?;
+            self.ensure_within_deadline()
         }
-        Ok(())
-    }
-
-    async fn flush_writer<W>(&mut self, writer: &mut W) -> crate::Result<()>
-    where
-        W: AsyncWrite + Unpin + Send + ?Sized,
-    {
-        if let Err(source) = writer.flush().await {
-            let error = self.write_error(source);
-            self.complete_error(&error);
-            return Err(error);
+        .await;
+        if let Err(error) = &result {
+            self.complete_error(error);
         }
-        Ok(())
+        result
     }
 
     async fn copy_to_writer<W>(&mut self, writer: &mut W) -> crate::Result<u64>
@@ -319,7 +319,7 @@ impl StreamBody {
 
         let pending_chunk = self.take_pending_chunk_or_complete()?;
         if let Some(chunk) = pending_chunk {
-            self.write_chunk(writer, &chunk).await?;
+            self.write_with_deadline(writer.write_all(&chunk)).await?;
             copied = copied.saturating_add(chunk.len() as u64);
         }
 
@@ -330,10 +330,10 @@ impl StreamBody {
                 return Err(error);
             }
         } {
-            self.write_chunk(writer, &chunk).await?;
+            self.write_with_deadline(writer.write_all(&chunk)).await?;
             copied = copied.saturating_add(chunk.len() as u64);
         }
-        self.flush_writer(writer).await?;
+        self.write_with_deadline(writer.flush()).await?;
         self.complete_success();
         Ok(copied)
     }
@@ -357,7 +357,7 @@ impl StreamBody {
                 self.complete_error(&error);
                 return Err(error);
             }
-            self.write_chunk(writer, &chunk).await?;
+            self.write_with_deadline(writer.write_all(&chunk)).await?;
         }
 
         while let Some(chunk) = match self.next_chunk().await {
@@ -374,9 +374,9 @@ impl StreamBody {
                 self.complete_error(&error);
                 return Err(error);
             }
-            self.write_chunk(writer, &chunk).await?;
+            self.write_with_deadline(writer.write_all(&chunk)).await?;
         }
-        self.flush_writer(writer).await?;
+        self.write_with_deadline(writer.flush()).await?;
         self.complete_success();
         Ok(copied)
     }
@@ -393,12 +393,12 @@ impl StreamBody {
 
     fn complete_success(&mut self) {
         self.release_transport();
-        super::complete_success(&mut self.lifecycle);
+        lifecycle::complete_success(&mut self.lifecycle);
     }
 
     fn complete_error(&mut self, error: &Error) {
         self.release_transport();
-        super::complete_error(&mut self.lifecycle, error);
+        lifecycle::complete_error(&mut self.lifecycle, error);
     }
 }
 
@@ -538,6 +538,8 @@ impl ResponseStream {
 
     /// Copies the streamed body into `writer`.
     ///
+    /// The total timeout also covers writing and flushing the destination.
+    ///
     /// See also `examples/streaming.rs`.
     pub async fn copy_to_writer<W>(mut self, writer: &mut W) -> crate::Result<u64>
     where
@@ -547,6 +549,8 @@ impl ResponseStream {
     }
 
     /// Copies the streamed body into `writer`, enforcing `max_bytes`.
+    ///
+    /// The total timeout also covers writing and flushing the destination.
     pub async fn copy_to_writer_limited<W>(
         mut self,
         writer: &mut W,

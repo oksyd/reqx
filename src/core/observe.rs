@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use crate::policy::RequestContext;
+use crate::core::policy::RequestContext;
+use crate::core::retry::RetryDecision;
 use crate::rate_limit::ServerThrottleScope;
-use crate::retry::RetryDecision;
 
 /// Passive observer for request lifecycle events.
 pub trait Observer: Send + Sync {

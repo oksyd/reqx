@@ -3,27 +3,31 @@ use std::time::Duration;
 
 use http::HeaderMap;
 
-use crate::extensions::{BackoffSource, BodyCodec, Clock, EndpointSelector};
-use crate::metrics::ClientMetrics;
-use crate::observe::Observer;
-use crate::policy::{Interceptor, RedirectPolicy, StatusPolicy};
-use crate::proxy::ProxyConfig;
+use crate::core::extensions::{BackoffSource, BodyCodec, Clock, EndpointSelector};
+use crate::core::metrics::ClientMetrics;
+use crate::core::observe::Observer;
+use crate::core::policy::{Interceptor, RedirectPolicy, StatusPolicy};
+use crate::core::proxy::ProxyConfig;
+use crate::core::retry::{RetryEligibility, RetryPolicy};
 use crate::rate_limit::{RateLimiter, ServerThrottleScope};
 use crate::resilience::{CircuitBreaker, RetryBudget};
-use crate::retry::{RetryEligibility, RetryPolicy};
 use crate::tls::TlsBackend;
 
 mod adaptive;
-pub(crate) mod body;
+mod body;
 mod builder;
-pub(crate) mod client;
+mod client;
+mod dns;
 pub(crate) mod limiters;
-pub(crate) mod request;
+mod proxy;
+mod request;
 mod transport;
+mod transport_error;
 
 use adaptive::AdaptiveConcurrencyController;
 pub use builder::ClientBuilder;
 use limiters::RequestLimiters;
+pub use request::RequestBuilder;
 use transport::TransportClient;
 
 #[derive(Clone)]

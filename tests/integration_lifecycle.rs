@@ -285,3 +285,138 @@ async fn canceling_transport_and_buffered_body_records_completion_once() {
         assert_eq!(metrics.latency.samples, 1);
     }
 }
+
+#[cfg(feature = "_async")]
+#[tokio::test]
+async fn async_stream_copy_deadline_covers_stalled_writes_and_flushes() {
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::io::AsyncWrite;
+
+    struct StalledWriter {
+        stall_flush: bool,
+    }
+
+    impl AsyncWrite for StalledWriter {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            bytes: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            if self.stall_flush {
+                Poll::Ready(Ok(bytes.len()))
+            } else {
+                Poll::Pending
+            }
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Pending
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    for limited in [false, true] {
+        for stall_flush in [false, true] {
+            let server = Server::new(false);
+            let client = reqx::Client::builder(&server.url)
+                .metrics_enabled(true)
+                .max_in_flight(1)
+                .retry_policy(RetryPolicy::disabled())
+                .build()
+                .expect("client");
+            let stream = client
+                .get("/")
+                .total_timeout(Duration::from_millis(200))
+                .send_stream()
+                .await
+                .expect("response headers");
+            let mut writer = StalledWriter { stall_flush };
+            let result = tokio::time::timeout(Duration::from_secs(1), async {
+                if limited {
+                    stream.copy_to_writer_limited(&mut writer, 2).await
+                } else {
+                    stream.copy_to_writer(&mut writer).await
+                }
+            })
+            .await
+            .expect("total timeout must wake a stalled writer");
+            assert!(matches!(result, Err(reqx::Error::DeadlineExceeded { .. })));
+            let metrics = client.metrics_snapshot();
+            assert_eq!(metrics.requests.failed, 1);
+            assert_eq!(metrics.requests.canceled, 0);
+            assert_eq!(metrics.requests.in_flight, 0);
+            assert_eq!(
+                metrics
+                    .errors
+                    .by_code
+                    .get(&reqx::ErrorCode::DeadlineExceeded),
+                Some(&1)
+            );
+            client
+                .get("/")
+                .total_timeout(Duration::from_millis(200))
+                .send()
+                .await
+                .expect("timed out copy must release capacity");
+        }
+    }
+}
+
+#[cfg(feature = "_blocking")]
+#[test]
+fn blocking_stream_copy_reports_deadline_after_slow_flush() {
+    struct SlowFlushWriter;
+
+    impl Write for SlowFlushWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            std::thread::sleep(Duration::from_millis(300));
+            Ok(())
+        }
+    }
+
+    for limited in [false, true] {
+        let server = Server::new(false);
+        let client = reqx::blocking::Client::builder(&server.url)
+            .metrics_enabled(true)
+            .max_in_flight(1)
+            .retry_policy(RetryPolicy::disabled())
+            .build()
+            .expect("client");
+        let stream = client
+            .get("/")
+            .total_timeout(Duration::from_millis(200))
+            .send_stream()
+            .expect("response headers");
+        let mut writer = SlowFlushWriter;
+        let result = if limited {
+            stream.copy_to_writer_limited(&mut writer, 2)
+        } else {
+            stream.copy_to_writer(&mut writer)
+        };
+        assert!(matches!(result, Err(reqx::Error::DeadlineExceeded { .. })));
+        let metrics = client.metrics_snapshot();
+        assert_eq!(metrics.requests.failed, 1);
+        assert_eq!(metrics.requests.succeeded, 0);
+        assert_eq!(metrics.requests.canceled, 0);
+        assert_eq!(
+            metrics
+                .errors
+                .by_code
+                .get(&reqx::ErrorCode::DeadlineExceeded),
+            Some(&1)
+        );
+        client
+            .get("/")
+            .total_timeout(Duration::from_millis(200))
+            .send()
+            .expect("timed out copy must release capacity");
+    }
+}

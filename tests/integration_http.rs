@@ -11,8 +11,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use bytes::Bytes;
-use flate2::Compression;
-use flate2::write::GzEncoder;
+#[cfg(feature = "compression-gzip")]
+use flate2::{Compression, write::GzEncoder};
 use futures_util::stream;
 use http::header::{CONTENT_LENGTH, HeaderName, HeaderValue, TRANSFER_ENCODING, USER_AGENT};
 use reqx::advanced::{
@@ -658,6 +658,7 @@ fn write_response(stream: &mut TcpStream, response: &MockResponse) -> std::io::R
     stream.flush()
 }
 
+#[cfg(feature = "compression-gzip")]
 fn gzip_bytes(data: &[u8]) -> Vec<u8> {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     encoder
@@ -1699,6 +1700,77 @@ async fn body_stream_replaces_stale_content_length_from_previous_reader_body() {
             .get("content-length")
             .map(String::as_str),
         Some("1")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn body_reader_preserves_user_declared_content_length() {
+    let server = MockServer::start(vec![MockResponse::new(
+        200,
+        Vec::<(String, String)>::new(),
+        "ok",
+        Duration::ZERO,
+    )]);
+    let client = Client::builder(server.base_url.clone())
+        .request_timeout(Duration::from_secs(1))
+        .retry_policy(RetryPolicy::disabled())
+        .build()
+        .expect("client should build");
+
+    let response = client
+        .post("/v1/upload")
+        .header(CONTENT_LENGTH, HeaderValue::from_static("11"))
+        .body_reader(&b"hello world"[..])
+        .send()
+        .await
+        .expect("reader upload should succeed");
+    assert_eq!(response.status().as_u16(), 200);
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0]
+            .headers
+            .get("content-length")
+            .map(String::as_str),
+        Some("11")
+    );
+    assert_eq!(requests[0].body, b"hello world");
+    assert!(!requests[0].headers.contains_key("transfer-encoding"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn body_reader_replaces_stale_helper_content_length() {
+    let server = MockServer::start(vec![MockResponse::new(
+        200,
+        Vec::<(String, String)>::new(),
+        "ok",
+        Duration::ZERO,
+    )]);
+    let client = Client::builder(server.base_url.clone())
+        .request_timeout(Duration::from_secs(1))
+        .retry_policy(RetryPolicy::disabled())
+        .build()
+        .expect("client should build");
+
+    client
+        .post("/v1/upload")
+        .body_reader_with_length(tokio::io::empty(), 1)
+        .expect("reader content-length should parse")
+        .body_reader(&b"streamed"[..])
+        .send()
+        .await
+        .expect("reader upload should succeed");
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(!requests[0].headers.contains_key("content-length"));
+    assert_eq!(
+        requests[0]
+            .headers
+            .get("transfer-encoding")
+            .map(String::as_str),
+        Some("chunked")
     );
 }
 

@@ -4,38 +4,38 @@ use std::time::Duration;
 use http::header::{HeaderName, HeaderValue};
 use http::{HeaderMap, Uri};
 
-use crate::config::{
+use crate::async_client::limiters::RequestLimiters;
+use crate::core::config::{
     ClientCommonBuildConfig, ClientConcurrencyLimits, ClientControlPolicies, ClientProfile,
     ClientTimeoutConfig,
 };
-use crate::error::Error;
-use crate::extensions::{
+use crate::core::error::Error;
+use crate::core::extensions::{
     BackoffSource, BodyCodec, Clock, EndpointSelector, OtelPathNormalizer, PolicyBackoffSource,
     PrimaryEndpointSelector, StandardBodyCodec, StandardOtelPathNormalizer, SystemClock,
 };
-use crate::limiters::RequestLimiters;
-use crate::metrics::ClientMetrics;
-use crate::observe::Observer;
-use crate::otel::OtelTelemetry;
-use crate::policy::{Interceptor, RedirectPolicy, StatusPolicy};
-use crate::proxy::{
+use crate::core::metrics::ClientMetrics;
+use crate::core::observe::Observer;
+use crate::core::otel::OtelTelemetry;
+use crate::core::policy::{Interceptor, RedirectPolicy, StatusPolicy};
+use crate::core::proxy::{
     NoProxyRule, ProxyConfig, parse_no_proxy_rule, parse_no_proxy_rules,
     redact_no_proxy_rule_for_logs,
 };
+use crate::core::retry::{
+    PermissiveRetryEligibility, RetryEligibility, RetryPolicy, StrictRetryEligibility,
+};
+use crate::core::util::{
+    mark_sensitive_header_value, parse_header_name, parse_header_value, redact_uri_for_logs,
+    validate_base_url, validate_http_proxy_uri,
+};
+use crate::http::response::DEFAULT_STREAM_DEADLINE_SLACK;
 use crate::rate_limit::{RateLimitPolicy, RateLimiter, ServerThrottleScope};
 use crate::resilience::{
     AdaptiveConcurrencyPolicy, CircuitBreaker, CircuitBreakerPolicy, RetryBudget, RetryBudgetPolicy,
 };
-use crate::response::DEFAULT_STREAM_DEADLINE_SLACK;
-use crate::retry::{
-    PermissiveRetryEligibility, RetryEligibility, RetryPolicy, StrictRetryEligibility,
-};
 use crate::tls::{
     TlsBackend, TlsClientIdentity, TlsOptions, TlsRootCertificate, TlsRootStore, TlsVersion,
-};
-use crate::util::{
-    mark_sensitive_header_value, parse_header_name, parse_header_value, redact_uri_for_logs,
-    validate_base_url, validate_http_proxy_uri,
 };
 
 use super::Client;
@@ -367,7 +367,7 @@ impl ClientBuilder {
         Ok(self)
     }
 
-    /// Adds a default header included with every request.
+    /// Sets a default header for every request, replacing any existing value with the same name.
     ///
     /// Request sending rejects explicit `Transfer-Encoding` and malformed or
     /// ambiguous `Content-Length`; body framing is otherwise transport-managed.
@@ -396,7 +396,7 @@ impl ClientBuilder {
         self
     }
 
-    /// Parses and adds a default header included with every request.
+    /// Parses and sets a default header, replacing any existing value with the same name.
     pub fn try_default_header(self, name: &str, value: &str) -> crate::Result<Self> {
         let name = parse_header_name(name)?;
         let value = parse_header_value(name.as_str(), value)?;
@@ -833,7 +833,7 @@ impl ClientBuilder {
         });
         let transport = build_transport_client(
             self.tls_backend,
-            crate::proxy::ProxyConnector::new(
+            super::proxy::ProxyConnector::new(
                 proxy_config.clone(),
                 self.connect_timeout,
                 dns_overrides,
@@ -945,3 +945,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod contract_tests;

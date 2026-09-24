@@ -1,9 +1,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::error::Error;
-use crate::extensions::Clock;
-use crate::util::{
+use crate::core::error::Error;
+use crate::core::extensions::Clock;
+use crate::core::util::{
     clamp_f64_or_fallback, duration_millis_ceil, lock_unpoisoned, normalize_usize_at_least_one,
 };
 
@@ -811,8 +811,8 @@ mod tests {
         AdaptiveConcurrencyOutcome, AdaptiveConcurrencyPolicy, AdaptiveConcurrencyState,
         CircuitBreaker, CircuitBreakerPolicy, RetryBudget, RetryBudgetPolicy,
     };
-    use crate::error::Error;
-    use crate::extensions::Clock;
+    use crate::core::error::Error;
+    use crate::core::extensions::Clock;
 
     #[derive(Debug)]
     struct TestClock {

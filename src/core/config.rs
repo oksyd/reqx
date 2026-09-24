@@ -3,12 +3,12 @@ use std::time::Duration;
 use http::header::USER_AGENT;
 use http::{HeaderMap, HeaderValue};
 
-use crate::error::Error;
-use crate::policy::{RedirectPolicy, StatusPolicy};
+use crate::core::error::Error;
+use crate::core::policy::{RedirectPolicy, StatusPolicy};
+use crate::core::retry::RetryPolicy;
+use crate::core::util::duration_millis_ceil;
 use crate::rate_limit::RateLimitPolicy;
 use crate::resilience::{AdaptiveConcurrencyPolicy, CircuitBreakerPolicy, RetryBudgetPolicy};
-use crate::retry::RetryPolicy;
-use crate::util::duration_millis_ceil;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -274,9 +274,9 @@ mod tests {
         ClientCommonBuildConfig, ClientConcurrencyLimits, ClientControlPolicies, ClientProfile,
         ClientTimeoutConfig,
     };
-    use crate::error::Error;
-    use crate::policy::RedirectPolicy;
-    use crate::retry::RetryPolicy;
+    use crate::core::error::Error;
+    use crate::core::policy::RedirectPolicy;
+    use crate::core::retry::RetryPolicy;
 
     fn valid_common_build_config<'a>(
         retry_policy: &'a RetryPolicy,

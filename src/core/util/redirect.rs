@@ -175,3 +175,6 @@ pub(crate) fn sanitize_headers_for_redirect(
     }
     headers.remove(PROXY_AUTHORIZATION);
 }
+
+#[cfg(test)]
+mod contract_tests;

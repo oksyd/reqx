@@ -8,13 +8,13 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::IDEMPOTENCY_KEY_HEADER;
+use crate::core::policy::{RedirectPolicy, StatusPolicy};
 use crate::core::request_builder::{
     PreparedRequest, RequestExecutionOptions, RequestExecutionOverrides, RequestPreparation,
 };
-use crate::policy::{RedirectPolicy, StatusPolicy};
-use crate::response::{BlockingResponseStream, Response};
-use crate::retry::RetryPolicy;
-use crate::util::{mark_sensitive_header_value, parse_header_name, parse_header_value};
+use crate::core::retry::RetryPolicy;
+use crate::core::util::{mark_sensitive_header_value, parse_header_name, parse_header_value};
+use crate::http::response::{BlockingResponseStream, Response};
 
 use super::{Client, RequestBody};
 
@@ -68,7 +68,7 @@ impl<'a> RequestBuilder<'a> {
         }
     }
 
-    /// Adds a header to this request.
+    /// Sets a request header, replacing any existing value with the same name.
     ///
     /// Request sending rejects explicit `Transfer-Encoding` and malformed or
     /// ambiguous `Content-Length`; body framing is otherwise transport-managed.
@@ -81,7 +81,7 @@ impl<'a> RequestBuilder<'a> {
         self
     }
 
-    /// Parses and adds a header to this request.
+    /// Parses and sets a request header, replacing any existing value with the same name.
     pub fn try_header(self, name: &str, value: &str) -> crate::Result<Self> {
         let name = parse_header_name(name)?;
         let value = parse_header_value(name.as_str(), value)?;
@@ -120,7 +120,7 @@ impl<'a> RequestBuilder<'a> {
         T: Serialize + ?Sized,
     {
         let encoded = serde_urlencoded::to_string(params)
-            .map_err(|source| crate::error::Error::SerializeQuery { source })?;
+            .map_err(|source| crate::core::error::Error::SerializeQuery { source })?;
         self.query_pairs.extend(
             url::form_urlencoded::parse(encoded.as_bytes())
                 .map(|(name, value)| (name.into_owned(), value.into_owned())),
@@ -136,6 +136,9 @@ impl<'a> RequestBuilder<'a> {
     }
 
     /// Streams a blocking reader as the request body.
+    ///
+    /// Preserves an explicitly supplied `Content-Length`, but clears a length
+    /// set by an earlier `body_reader_with_length` call.
     pub fn body_reader<R>(mut self, reader: R) -> Self
     where
         R: Read + Send + 'static,
@@ -153,7 +156,7 @@ impl<'a> RequestBuilder<'a> {
         R: Read + Send + 'static,
     {
         let value = HeaderValue::from_str(&content_length.to_string()).map_err(|source| {
-            crate::error::Error::InvalidHeaderValue {
+            crate::core::error::Error::InvalidHeaderValue {
                 name: CONTENT_LENGTH.as_str().to_owned(),
                 source,
             }
@@ -185,7 +188,7 @@ impl<'a> RequestBuilder<'a> {
         T: Serialize + ?Sized,
     {
         let body = serde_json::to_vec(payload)
-            .map_err(|source| crate::error::Error::SerializeJson { source })?;
+            .map_err(|source| crate::core::error::Error::SerializeJson { source })?;
         let with_body = self.body_bytes(Bytes::from(body));
         Ok(with_body.header(CONTENT_TYPE, HeaderValue::from_static("application/json")))
     }
@@ -196,7 +199,7 @@ impl<'a> RequestBuilder<'a> {
         T: Serialize + ?Sized,
     {
         let encoded = serde_urlencoded::to_string(payload)
-            .map_err(|source| crate::error::Error::SerializeForm { source })?;
+            .map_err(|source| crate::core::error::Error::SerializeForm { source })?;
         let with_body = self.body_bytes(Bytes::from(encoded));
         Ok(with_body.header(
             CONTENT_TYPE,

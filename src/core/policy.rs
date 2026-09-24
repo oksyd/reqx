@@ -1,6 +1,6 @@
 use http::{HeaderMap, Method, StatusCode};
 
-use crate::error::Error;
+use crate::core::error::Error;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Redirect handling policy.

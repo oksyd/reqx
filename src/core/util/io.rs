@@ -38,25 +38,6 @@ where
     }
 }
 
-#[cfg(all(feature = "_async", feature = "resumable-upload"))]
-pub(crate) async fn read_async_retry_interrupted<R>(
-    reader: &mut R,
-    buffer: &mut [u8],
-) -> io::Result<usize>
-where
-    R: tokio::io::AsyncRead + Unpin + ?Sized,
-{
-    use tokio::io::AsyncReadExt;
-
-    loop {
-        match reader.read(buffer).await {
-            Ok(read) => return Ok(read),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
-        }
-    }
-}
-
 pub(crate) const fn normalize_usize_at_least_one(value: usize) -> usize {
     if value == 0 { 1 } else { value }
 }

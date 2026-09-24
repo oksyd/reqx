@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as Sha2Digest, Sha256};
 use thiserror::Error;
 
-use crate::util::{duration_millis_ceil, exponential_backoff_with_jitter};
+use crate::core::util::{duration_millis_ceil, exponential_backoff_with_jitter};
 
 #[cfg(feature = "_async")]
 mod asynchronous;
@@ -538,7 +538,10 @@ where
     },
     /// The source stream produced no uploadable data.
     #[error("upload body produced no parts")]
-    EmptyUploadBody,
+    EmptyUploadBody {
+        /// Created upload session, available for retry or explicit cleanup.
+        checkpoint: ResumableUploadCheckpoint,
+    },
     /// A required completed part was missing from the checkpoint.
     #[error("missing completed metadata for part {part_number}")]
     MissingCompletedPart {
@@ -587,6 +590,7 @@ where
             | Self::PartChecksumMismatch { checkpoint, .. }
             | Self::PartEtagMismatch { checkpoint, .. }
             | Self::CompleteFailed { checkpoint, .. }
+            | Self::EmptyUploadBody { checkpoint }
             | Self::MissingCompletedPart { checkpoint, .. }
             | Self::TooManyUploadParts { checkpoint, .. } => Some(checkpoint),
             Self::AbortFailed { original, .. } => original.checkpoint(),
@@ -604,6 +608,7 @@ where
             | Self::PartChecksumMismatch { checkpoint, .. }
             | Self::PartEtagMismatch { checkpoint, .. }
             | Self::CompleteFailed { checkpoint, .. }
+            | Self::EmptyUploadBody { checkpoint }
             | Self::MissingCompletedPart { checkpoint, .. }
             | Self::TooManyUploadParts { checkpoint, .. } => Some(checkpoint),
             Self::AbortFailed { original, .. } => original.into_checkpoint(),

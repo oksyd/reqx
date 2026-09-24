@@ -257,3 +257,6 @@ pub(crate) fn redact_uri_like_text_for_logs(text: &str) -> String {
     }
     redacted
 }
+
+#[cfg(test)]
+mod contract_tests;

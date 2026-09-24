@@ -17,7 +17,7 @@ use http::{Method, StatusCode};
     feature = "compression-brotli",
     feature = "compression-zstd"
 ))]
-use crate::util::read_retry_interrupted;
+use crate::core::util::read_retry_interrupted;
 
 #[derive(Debug)]
 pub(crate) enum DecodeContentEncodingError {
@@ -132,26 +132,19 @@ pub(crate) fn decode_content_encoded_body_limited(
     let mut encodings = encodings.into_iter().map(str::to_owned).collect::<Vec<_>>();
 
     while let Some(encoding) = encodings.pop() {
-        let decoded = match encoding.to_ascii_lowercase().as_str() {
-            "identity" => {
-                if body.len() > max_bytes {
-                    return Err(DecodeContentEncodingError::TooLarge {
-                        actual_bytes: body.len(),
-                    });
-                }
-                body.to_vec()
-            }
+        body = match encoding.to_ascii_lowercase().as_str() {
+            "identity" => body,
             #[cfg(feature = "compression-gzip")]
             "gzip" => {
                 let mut decoder = flate2::read::MultiGzDecoder::new(body.as_ref());
-                read_to_end_limited(&mut decoder, &encoding, max_bytes)?
+                Bytes::from(read_to_end_limited(&mut decoder, &encoding, max_bytes)?)
             }
             #[cfg(feature = "compression-gzip")]
-            "deflate" => decode_deflate_limited(&body, &encoding, max_bytes)?,
+            "deflate" => Bytes::from(decode_deflate_limited(&body, &encoding, max_bytes)?),
             #[cfg(feature = "compression-brotli")]
             "br" => {
                 let mut decoder = brotli::Decompressor::new(body.as_ref(), 4096);
-                read_to_end_limited(&mut decoder, &encoding, max_bytes)?
+                Bytes::from(read_to_end_limited(&mut decoder, &encoding, max_bytes)?)
             }
             #[cfg(feature = "compression-zstd")]
             "zstd" => {
@@ -162,7 +155,7 @@ pub(crate) fn decode_content_encoded_body_limited(
                             message: error.to_string(),
                         }
                     })?;
-                read_to_end_limited(&mut decoder, &encoding, max_bytes)?
+                Bytes::from(read_to_end_limited(&mut decoder, &encoding, max_bytes)?)
             }
             other => {
                 return Err(DecodeContentEncodingError::Decode {
@@ -171,7 +164,6 @@ pub(crate) fn decode_content_encoded_body_limited(
                 });
             }
         };
-        body = Bytes::from(decoded);
     }
 
     Ok(body)
@@ -355,3 +347,6 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod contract_tests;

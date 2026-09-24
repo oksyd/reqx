@@ -55,6 +55,11 @@ impl AsyncResumableUploader {
     }
 
     /// Resumes an upload from an existing checkpoint.
+    ///
+    /// `reader` must provide the entire source from the beginning; reopen or
+    /// rewind a reader consumed by a previous attempt. Completed parts are read
+    /// again and skipped only when their size and configured checksums match.
+    /// Without checksums, the caller must ensure the source contents are unchanged.
     pub async fn resume<B, R>(
         &self,
         backend: &B,
