@@ -1,3 +1,14 @@
+## [0.2.6] - 2026-09-24
+
+### 🚀 Features
+
+- *(tls)* Add an async-tls-rustls-no-provider backend
+- *(tls)* Support caller-installed providers in blocking clients
+## [0.2.5] - 2026-09-24
+
+### ⚙️ Miscellaneous Tasks
+
+- Release reqx version 0.2.5
 ## [0.2.4] - 2026-09-22
 
 ### 🐛 Bug Fixes
