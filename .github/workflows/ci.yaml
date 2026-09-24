@@ -24,18 +24,33 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          mkdir -p "$cargo_bin"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://get.nexte.st/latest/linux \
+            | tar --no-same-owner -xzf - -C "$cargo_bin"
+          "$cargo_bin/cargo-nextest" --version
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/src
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-quality-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-quality-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock', 'rust-toolchain.toml') }}-
 
       - name: Install nightly toolchain for docsrs-check
         run: rustup toolchain install nightly --profile minimal
@@ -68,13 +83,23 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         run: rustup toolchain install 1.98.1 --profile minimal
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/src
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-msrv-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-msrv-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock', 'rust-toolchain.toml') }}-
 
       - name: Check default and complete feature sets
         run: |
@@ -196,18 +221,33 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        run: rustup toolchain install 1.98.1 --profile minimal
+        run: rustup toolchain install 1.98.1 --profile minimal --component clippy
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/src
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-feature-matrix-${{ matrix.name }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-feature-matrix-${{ matrix.name }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock', 'rust-toolchain.toml') }}-
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          mkdir -p "$cargo_bin"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://get.nexte.st/latest/linux \
+            | tar --no-same-owner -xzf - -C "$cargo_bin"
+          "$cargo_bin/cargo-nextest" --version
 
       - name: Run feature profile
         run: ${{ matrix.command }}
