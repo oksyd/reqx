@@ -80,6 +80,8 @@
 //!
 //! - Async + `rustls` + `ring`: `async-tls-rustls-ring`
 //! - Async + `rustls` + `aws-lc-rs`: `async-tls-rustls-aws-lc-rs`
+//! - Async + `rustls` + a caller-installed crypto provider (e.g. the
+//!   pure-Rust `rustls-graviola`): `async-tls-rustls-no-provider`
 //! - Async + `native-tls`: `async-tls-native`
 //! - Blocking + `ureq` + `rustls` + `ring`: `blocking-tls-rustls-ring`
 //! - Blocking + `ureq` + `rustls` + `aws-lc-rs`: `blocking-tls-rustls-aws-lc-rs`
@@ -132,12 +134,18 @@
 //!   blocks; pass private keys through the dedicated identity key parameter.
 //! - Blocking `native-tls` cannot merge custom root CAs into the system trust
 //!   store; use [`TlsRootStore::Specific`] when adding explicit roots there.
+//! - `async-tls-rustls-no-provider` does not select a crypto provider itself;
+//!   the application must install one as the process-wide rustls default
+//!   (e.g. `rustls::crypto::CryptoProvider::install_default(...)`) before
+//!   building a client. If none is installed, building a client returns
+//!   [`Error::TlsBackendInit`] instead of panicking.
 
 #[cfg(all(
     feature = "_async",
     not(any(
         feature = "async-tls-rustls-ring",
         feature = "async-tls-rustls-aws-lc-rs",
+        feature = "async-tls-rustls-no-provider",
         feature = "async-tls-native"
     ))
 ))]
@@ -173,6 +181,7 @@ mod upload;
     doc(cfg(any(
         feature = "async-tls-rustls-ring",
         feature = "async-tls-rustls-aws-lc-rs",
+        feature = "async-tls-rustls-no-provider",
         feature = "async-tls-native"
     )))
 )]
@@ -185,6 +194,7 @@ pub use crate::http::response::Response;
     doc(cfg(any(
         feature = "async-tls-rustls-ring",
         feature = "async-tls-rustls-aws-lc-rs",
+        feature = "async-tls-rustls-no-provider",
         feature = "async-tls-native"
     )))
 )]
@@ -221,6 +231,7 @@ pub mod prelude {
         doc(cfg(any(
             feature = "async-tls-rustls-ring",
             feature = "async-tls-rustls-aws-lc-rs",
+            feature = "async-tls-rustls-no-provider",
             feature = "async-tls-native"
         )))
     )]
@@ -245,6 +256,7 @@ pub mod prelude {
         doc(cfg(any(
             feature = "async-tls-rustls-ring",
             feature = "async-tls-rustls-aws-lc-rs",
+            feature = "async-tls-rustls-no-provider",
             feature = "async-tls-native"
         )))
     )]
@@ -269,6 +281,7 @@ pub mod advanced {
             any(
                 feature = "async-tls-rustls-ring",
                 feature = "async-tls-rustls-aws-lc-rs",
+                feature = "async-tls-rustls-no-provider",
                 feature = "async-tls-native"
             )
         )))

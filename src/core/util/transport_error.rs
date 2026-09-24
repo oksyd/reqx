@@ -40,6 +40,7 @@ pub(crate) fn is_tls_error(error: &(dyn std::error::Error + 'static)) -> bool {
         #[cfg(any(
             feature = "async-tls-rustls-ring",
             feature = "async-tls-rustls-aws-lc-rs",
+            feature = "async-tls-rustls-no-provider",
             feature = "blocking-tls-rustls-ring",
             feature = "blocking-tls-rustls-aws-lc-rs"
         ))]

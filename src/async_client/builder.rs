@@ -54,6 +54,7 @@ const DEFAULT_MAX_RESPONSE_BODY_BYTES: usize = 8 * 1024 * 1024;
     doc(cfg(any(
         feature = "async-tls-rustls-ring",
         feature = "async-tls-rustls-aws-lc-rs",
+        feature = "async-tls-rustls-no-provider",
         feature = "async-tls-native"
     )))
 )]
