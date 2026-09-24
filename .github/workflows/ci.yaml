@@ -18,8 +18,8 @@ env:
 
 jobs:
   quality:
-    name: quality / ubuntu-latest / stable
-    runs-on: ubuntu-latest
+    name: quality / ubuntu-26.04 / stable
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
 
     steps:
@@ -48,9 +48,9 @@ jobs:
             ~/.cargo/registry/src
             ~/.cargo/git/db
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-quality-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
+          key: ${{ runner.os }}-ubuntu-26.04-${{ runner.arch }}-cargo-quality-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-cargo-quality-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock', 'rust-toolchain.toml') }}-
+            ${{ runner.os }}-ubuntu-26.04-${{ runner.arch }}-cargo-quality-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock', 'rust-toolchain.toml') }}-
 
       - name: Install nightly toolchain for docsrs-check
         run: rustup toolchain install nightly --profile minimal
@@ -75,8 +75,8 @@ jobs:
           cargo nextest run --all-features
 
   msrv:
-    name: msrv / ubuntu-latest / 1.98.1
-    runs-on: ubuntu-latest
+    name: msrv / ubuntu-26.04 / 1.98.1
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     env:
       RUSTUP_TOOLCHAIN: 1.98.1
@@ -97,9 +97,9 @@ jobs:
             ~/.cargo/registry/src
             ~/.cargo/git/db
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-msrv-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
+          key: ${{ runner.os }}-ubuntu-26.04-${{ runner.arch }}-cargo-msrv-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-cargo-msrv-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock', 'rust-toolchain.toml') }}-
+            ${{ runner.os }}-ubuntu-26.04-${{ runner.arch }}-cargo-msrv-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock', 'rust-toolchain.toml') }}-
 
       - name: Check default and complete feature sets
         run: |
@@ -108,7 +108,7 @@ jobs:
 
   feature-matrix:
     name: feature-matrix / ${{ matrix.name }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     env:
       RUSTUP_TOOLCHAIN: 1.98.1
@@ -235,9 +235,9 @@ jobs:
             ~/.cargo/registry/src
             ~/.cargo/git/db
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-feature-matrix-${{ matrix.name }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
+          key: ${{ runner.os }}-ubuntu-26.04-${{ runner.arch }}-cargo-feature-matrix-${{ matrix.name }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-cargo-feature-matrix-${{ matrix.name }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock', 'rust-toolchain.toml') }}-
+            ${{ runner.os }}-ubuntu-26.04-${{ runner.arch }}-cargo-feature-matrix-${{ matrix.name }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock', 'rust-toolchain.toml') }}-
 
       - name: Install cargo-nextest
         shell: bash
