@@ -54,7 +54,7 @@ blocking-tls-native = ["_blocking", "dep:native-tls", "ureq/native-tls"]
 otel = ["dep:opentelemetry"]
 
 [dependencies]
-tokio = { version = "1.53.1", default-features = false, features = ["io-util", "rt", "sync", "time"], optional = true }
+tokio = { version = "1.53.2", default-features = false, features = ["io-util", "rt", "sync", "time"], optional = true }
 tokio-util = { version = "0.7.19", default-features = false, features = ["io"], optional = true }
 futures-core = { version = "0.3.34", default-features = false, features = ["std"], optional = true }
 futures-util = { version = "0.3.34", default-features = false, features = ["std"], optional = true }
@@ -64,8 +64,8 @@ ipnet = { version = "2.12.2", default-features = false, features = ["std"] }
 http = { version = "1.5.0", default-features = false, features = ["std"] }
 http-body-util = { version = "0.1.5", default-features = false, optional = true }
 httpdate = { version = "1.0.3", default-features = false }
-hyper = { version = "1.11.1", default-features = false, features = ["client", "http1", "http2"], optional = true }
-hyper-util = { version = "0.1.20", default-features = false, features = ["client-legacy", "client-proxy", "http1", "http2", "tokio"], optional = true }
+hyper = { version = "1.12.0", default-features = false, features = ["client", "http1", "http2"], optional = true }
+hyper-util = { version = "0.1.21", default-features = false, features = ["client-legacy", "client-proxy", "http1", "http2", "tokio"], optional = true }
 tower-service = { version = "0.3.3", default-features = false, optional = true }
 url = { version = "2.5.8", default-features = false, features = ["std"] }
 
@@ -99,8 +99,8 @@ opentelemetry = { version = "0.33.0", default-features = false, features = ["met
 criterion = { version = "0.8.2", default-features = false, features = ["async_tokio"] }
 rcgen = "0.14.10"
 rustls-graviola = "0.4.0"
-tokio = { version = "1.53.1", default-features = false, features = ["macros", "rt-multi-thread"] }
-tokio-rustls = { version = "0.26.5", default-features = false }
+tokio = { version = "1.53.2", default-features = false, features = ["macros", "rt-multi-thread"] }
+tokio-rustls = { version = "0.26.6", default-features = false }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry", "std"] }
 flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
 
