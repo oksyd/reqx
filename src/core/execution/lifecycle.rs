@@ -15,26 +15,19 @@ pub(crate) trait StreamOutcomeHooks {
     fn complete_canceled(&mut self);
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum StreamLifecycleState {
-    Pending,
-    Success,
-    Error,
-    Canceled,
-}
-
+#[derive(Default)]
 pub(crate) struct StreamLifecycle {
     completion: Option<StreamCompletion>,
     hooks: Option<Box<dyn StreamOutcomeHooks + Send>>,
-    state: StreamLifecycleState,
+    completed: bool,
 }
 
 impl StreamLifecycle {
-    pub(crate) fn new(hooks: Option<Box<dyn StreamOutcomeHooks + Send>>) -> Self {
+    pub(crate) fn new(hooks: Box<dyn StreamOutcomeHooks + Send>) -> Self {
         Self {
             completion: None,
-            hooks,
-            state: StreamLifecycleState::Pending,
+            hooks: Some(hooks),
+            completed: false,
         }
     }
 
@@ -43,40 +36,40 @@ impl StreamLifecycle {
     }
 
     pub(crate) fn complete_success(&mut self) {
-        if self.state != StreamLifecycleState::Pending {
+        if self.completed {
             return;
         }
-        self.state = StreamLifecycleState::Success;
-        if let Some(hooks) = &mut self.hooks {
+        self.completed = true;
+        if let Some(mut hooks) = self.hooks.take() {
             hooks.complete_success();
         }
-        if let Some(completion) = &mut self.completion {
+        if let Some(mut completion) = self.completion.take() {
             completion.complete_success();
         }
     }
 
     pub(crate) fn complete_error(&mut self, error: &Error) {
-        if self.state != StreamLifecycleState::Pending {
+        if self.completed {
             return;
         }
-        self.state = StreamLifecycleState::Error;
-        if let Some(hooks) = &mut self.hooks {
+        self.completed = true;
+        if let Some(mut hooks) = self.hooks.take() {
             hooks.complete_error(error);
         }
-        if let Some(completion) = &mut self.completion {
+        if let Some(mut completion) = self.completion.take() {
             completion.complete_error(error);
         }
     }
 
     pub(crate) fn complete_canceled(&mut self) {
-        if self.state != StreamLifecycleState::Pending {
+        if self.completed {
             return;
         }
-        self.state = StreamLifecycleState::Canceled;
-        if let Some(hooks) = &mut self.hooks {
+        self.completed = true;
+        if let Some(mut hooks) = self.hooks.take() {
             hooks.complete_canceled();
         }
-        if let Some(completion) = &mut self.completion {
+        if let Some(mut completion) = self.completion.take() {
             completion.complete_canceled();
         }
     }
@@ -88,7 +81,7 @@ impl std::fmt::Debug for StreamLifecycle {
             .debug_struct("StreamLifecycle")
             .field("has_completion", &self.completion.is_some())
             .field("has_hooks", &self.hooks.is_some())
-            .field("state", &self.state)
+            .field("completed", &self.completed)
             .finish()
     }
 }
@@ -96,30 +89,5 @@ impl std::fmt::Debug for StreamLifecycle {
 impl Drop for StreamLifecycle {
     fn drop(&mut self) {
         self.complete_canceled();
-    }
-}
-
-pub(crate) fn attach_completion(
-    lifecycle: &mut Option<StreamLifecycle>,
-    completion: StreamCompletion,
-) {
-    if let Some(lifecycle) = lifecycle {
-        lifecycle.attach_completion(completion);
-    } else {
-        let mut new_lifecycle = StreamLifecycle::new(None);
-        new_lifecycle.attach_completion(completion);
-        *lifecycle = Some(new_lifecycle);
-    }
-}
-
-pub(crate) fn complete_success(lifecycle: &mut Option<StreamLifecycle>) {
-    if let Some(lifecycle) = lifecycle {
-        lifecycle.complete_success();
-    }
-}
-
-pub(crate) fn complete_error(lifecycle: &mut Option<StreamLifecycle>, error: &Error) {
-    if let Some(lifecycle) = lifecycle {
-        lifecycle.complete_error(error);
     }
 }

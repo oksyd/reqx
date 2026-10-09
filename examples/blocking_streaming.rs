@@ -1,12 +1,5 @@
 use std::time::Duration;
 
-#[cfg(any(
-    feature = "blocking-tls-rustls-ring",
-    feature = "blocking-tls-rustls-aws-lc-rs",
-    feature = "blocking-tls-rustls-graviola",
-    feature = "blocking-tls-rustls-no-provider",
-    feature = "blocking-tls-native"
-))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Cursor;
 
@@ -34,22 +27,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let upload_status = client
         .post("/post")
         .idempotency_key("blocking-upload-reader-001")?
-        .body_reader_with_length(reader_payload, 26)?
+        .body_reader_with_length(reader_payload, 26)
         .send()?
         .status();
     println!("upload status={upload_status}");
 
     Ok(())
-}
-
-#[cfg(not(any(
-    feature = "blocking-tls-rustls-ring",
-    feature = "blocking-tls-rustls-aws-lc-rs",
-    feature = "blocking-tls-rustls-graviola",
-    feature = "blocking-tls-rustls-no-provider",
-    feature = "blocking-tls-native"
-)))]
-fn main() {
-    let _ = Duration::from_secs(1);
-    eprintln!("enable a `blocking-tls-*` feature to run this example");
 }

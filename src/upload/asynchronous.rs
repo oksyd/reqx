@@ -3,39 +3,12 @@ use super::session::{
 };
 use super::{
     AsyncResumableUploadBackend, ResumableUploadCheckpoint, ResumableUploadError,
-    ResumableUploadOptions, ResumableUploadResult, UploadedPart,
+    ResumableUploadResult, ResumableUploader, UploadedPart,
 };
 
-#[cfg(feature = "_async")]
-/// Async helper that drives a multipart upload with checkpoints and retries.
-#[cfg_attr(
-    docsrs,
-    doc(cfg(any(
-        feature = "async-tls-rustls-ring",
-        feature = "async-tls-rustls-aws-lc-rs",
-        feature = "async-tls-rustls-graviola",
-        feature = "async-tls-rustls-no-provider",
-        feature = "async-tls-native"
-    )))
-)]
-pub struct AsyncResumableUploader {
-    options: ResumableUploadOptions,
-}
-
-#[cfg(feature = "_async")]
-impl AsyncResumableUploader {
-    /// Creates a new uploader with the provided options.
-    pub fn new(options: ResumableUploadOptions) -> Self {
-        Self { options }
-    }
-
-    /// Returns the options used by this uploader.
-    pub fn options(&self) -> &ResumableUploadOptions {
-        &self.options
-    }
-
-    /// Starts a new resumable upload.
-    pub async fn upload<B, R>(
+impl ResumableUploader {
+    /// Starts a new resumable upload using an asynchronous backend.
+    pub async fn upload_async<B, R>(
         &self,
         backend: &B,
         reader: &mut R,
@@ -51,17 +24,20 @@ impl AsyncResumableUploader {
             .map_err(|source| ResumableUploadError::CreateFailed { source })?;
         let mut checkpoint = ResumableUploadCheckpoint::new(upload_id, self.options.part_size);
         checkpoint.checksum_algorithm = self.options.part_checksum_algorithm();
-        self.upload_with_checkpoint(backend, reader, checkpoint, false)
+        self.upload_with_checkpoint_async(backend, reader, checkpoint, false)
             .await
     }
 
-    /// Resumes an upload from an existing checkpoint.
+    /// Resumes an upload using an asynchronous backend.
+    ///
+    /// The checkpoint must use the current schema version and match the configured
+    /// part size and checksum algorithm. Invalid part numbers are rejected.
     ///
     /// `reader` must provide the entire source from the beginning; reopen or
     /// rewind a reader consumed by a previous attempt. Completed parts are read
     /// again and skipped only when their size and configured checksums match.
     /// Without checksums, the caller must ensure the source contents are unchanged.
-    pub async fn resume<B, R>(
+    pub async fn resume_async<B, R>(
         &self,
         backend: &B,
         reader: &mut R,
@@ -71,11 +47,12 @@ impl AsyncResumableUploader {
         B: AsyncResumableUploadBackend,
         R: tokio::io::AsyncRead + Unpin,
     {
-        self.upload_with_checkpoint(backend, reader, checkpoint, true)
+        self.options.validate::<B::Error>()?;
+        self.upload_with_checkpoint_async(backend, reader, checkpoint, true)
             .await
     }
 
-    async fn abort_error_if_configured<B>(
+    async fn abort_error_if_configured_async<B>(
         &self,
         backend: &B,
         upload_id: &str,
@@ -96,7 +73,7 @@ impl AsyncResumableUploader {
         error
     }
 
-    async fn upload_with_checkpoint<B, R>(
+    async fn upload_with_checkpoint_async<B, R>(
         &self,
         backend: &B,
         reader: &mut R,
@@ -110,65 +87,46 @@ impl AsyncResumableUploader {
         let mut session =
             ResumableUploadSession::new::<B::Error>(&self.options, checkpoint, resumed)?;
 
-        loop {
-            let chunk = match read_chunk_async(reader, self.options.part_size).await {
-                Ok(chunk) => chunk,
-                Err(source) => {
-                    let error = session.source_read_error(source);
-                    return Err(self
-                        .abort_error_if_configured(backend, session.upload_id(), error)
-                        .await);
-                }
-            };
+        let result = async {
+            loop {
+                let chunk = read_chunk_async(reader, self.options.part_size)
+                    .await
+                    .map_err(|source| session.source_read_error(source))?;
 
-            let action = match session.next_chunk::<B::Error>(chunk) {
-                Ok(action) => action,
-                Err(error) => {
-                    return Err(self
-                        .abort_error_if_configured(backend, session.upload_id(), error)
-                        .await);
-                }
-            };
-
-            match action {
-                UploadChunkAction::Finish => break,
-                UploadChunkAction::Skip => continue,
-                UploadChunkAction::Upload(plan) => {
-                    let uploaded = self
-                        .upload_part_with_retries(backend, &session, &plan)
-                        .await?;
-                    if let Err(error) = session.accept_uploaded_part::<B::Error>(&plan, uploaded) {
-                        return Err(self
-                            .abort_error_if_configured(backend, session.upload_id(), error)
-                            .await);
+                match session.next_chunk::<B::Error>(chunk)? {
+                    UploadChunkAction::Finish => break,
+                    UploadChunkAction::Skip => continue,
+                    UploadChunkAction::Upload(plan) => {
+                        let uploaded = self
+                            .upload_part_with_retries_async(backend, &session, &plan)
+                            .await?;
+                        session.accept_uploaded_part::<B::Error>(&plan, uploaded)?;
                     }
                 }
             }
-        }
 
-        let ordered_parts = match session.ordered_completed_parts::<B::Error>() {
+            let ordered_parts = session.ordered_completed_parts::<B::Error>()?;
+            backend
+                .complete_upload(session.upload_id(), &ordered_parts)
+                .await
+                .map_err(|source| session.complete_upload_failed(source))?;
+            Ok(ordered_parts)
+        }
+        .await;
+
+        let ordered_parts = match result {
             Ok(parts) => parts,
             Err(error) => {
                 return Err(self
-                    .abort_error_if_configured(backend, session.upload_id(), error)
+                    .abort_error_if_configured_async(backend, session.upload_id(), error)
                     .await);
             }
         };
 
-        if let Err(source) = backend
-            .complete_upload(session.upload_id(), &ordered_parts)
-            .await
-        {
-            let error = session.complete_upload_failed(source);
-            return Err(self
-                .abort_error_if_configured(backend, session.upload_id(), error)
-                .await);
-        }
-
         Ok(session.finish(ordered_parts))
     }
 
-    async fn upload_part_with_retries<B>(
+    async fn upload_part_with_retries_async<B>(
         &self,
         backend: &B,
         session: &ResumableUploadSession<'_>,
@@ -184,26 +142,13 @@ impl AsyncResumableUploader {
                 .await
             {
                 Ok(part) => return Ok(part),
-                Err(source) => match retry.record_failure(session, plan, source) {
-                    Ok(delay) => {
-                        if !delay.is_zero() {
-                            tokio::time::sleep(delay).await;
-                        }
+                Err(source) => {
+                    let delay = retry.record_failure(session, plan, source)?;
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
                     }
-                    Err(error) => {
-                        return Err(self
-                            .abort_error_if_configured(backend, session.upload_id(), error)
-                            .await);
-                    }
-                },
+                }
             }
         }
-    }
-}
-
-#[cfg(feature = "_async")]
-impl Default for AsyncResumableUploader {
-    fn default() -> Self {
-        Self::new(ResumableUploadOptions::default())
     }
 }

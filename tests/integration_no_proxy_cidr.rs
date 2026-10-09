@@ -143,6 +143,7 @@ macro_rules! cidr_suite {
                         .expect("proxy URI"),
                 )
                 .no_proxy([rule, "*.example.com", "::1/128"])
+                .expect("valid no_proxy rules")
                 .request_timeout(Duration::from_secs(2))
                 .retry_policy(RetryPolicy::disabled())
                 .build()
@@ -176,6 +177,7 @@ macro_rules! cidr_suite {
                     .expect("proxy URI"),
             )
             .no_proxy(["127.0.0.0/8", "::/0"])
+            .expect("valid no_proxy rules")
             .redirect_policy(RedirectPolicy::limited(2))
             .request_timeout(Duration::from_secs(2))
             .retry_policy(RetryPolicy::disabled())
@@ -190,13 +192,7 @@ macro_rules! cidr_suite {
 
         for invalid in ["192.168.0.0/33", "::/129", "example.com/24"] {
             assert!(matches!(
-                <$client>::builder("http://example.com")
-                    .no_proxy([invalid])
-                    .build(),
-                Err(reqx::Error::InvalidNoProxyRule { .. })
-            ));
-            assert!(matches!(
-                <$client>::builder("http://example.com").try_no_proxy([invalid]),
+                <$client>::builder("http://example.com").no_proxy([invalid]),
                 Err(reqx::Error::InvalidNoProxyRule { .. })
             ));
         }

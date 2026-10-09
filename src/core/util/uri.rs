@@ -248,31 +248,24 @@ pub(crate) fn validate_http_proxy_uri(proxy_uri: &Uri) -> Result<(), Error> {
     Ok(())
 }
 
-pub(crate) fn append_query_pairs(path: &str, query_pairs: &[(String, String)]) -> String {
-    if query_pairs.is_empty() {
-        return path.to_owned();
+pub(crate) fn append_query(mut path: String, query: &str) -> String {
+    if query.is_empty() {
+        return path;
     }
 
-    // Only encode new pairs. Re-parsing the existing query would change escapes,
+    // Append the already encoded query. Re-parsing the existing query would change escapes,
     // bare keys and non-UTF-8 bytes, and URL parsing would also normalize the path.
-    let (prefix, fragment) = path
-        .split_once('#')
-        .map_or((path, None), |(prefix, fragment)| (prefix, Some(fragment)));
-    let mut merged = prefix.to_owned();
-    match prefix.split_once('?') {
-        None => merged.push('?'),
-        Some((_, query)) if !query.is_empty() && !query.ends_with('&') => merged.push('&'),
+    let fragment = path.find('#').map(|index| path.split_off(index));
+    match path.split_once('?') {
+        None => path.push('?'),
+        Some((_, query)) if !query.is_empty() && !query.ends_with('&') => path.push('&'),
         _ => {}
     }
-    let appended = url::form_urlencoded::Serializer::new(String::new())
-        .extend_pairs(query_pairs.iter().map(|(name, value)| (name, value)))
-        .finish();
-    merged.push_str(&appended);
+    path.push_str(query);
     if let Some(fragment) = fragment {
-        merged.push('#');
-        merged.push_str(fragment);
+        path.push_str(&fragment);
     }
-    merged
+    path
 }
 
 pub(crate) fn join_base_path(base_url: &str, path: &str) -> String {

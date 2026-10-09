@@ -8,33 +8,20 @@ use crate::core::extensions::Clock;
 use crate::core::limiters::{
     PER_HOST_LIMITER_ENTRY_TTL, PER_HOST_LIMITER_MAX_ENTRIES,
     PerHostLimiterEntry as PerHostLimiterEntryState, cleanup_stale_per_host_limiters,
-    normalize_concurrency_limit, normalize_optional_concurrency_limit,
 };
 use crate::core::util::{lock_unpoisoned, normalize_host_key};
 
-#[derive(Clone)]
 pub(crate) struct RequestLimiters {
     clock: Arc<dyn Clock>,
     global: Option<Arc<BlockingSemaphore>>,
     per_host_limit: Option<usize>,
-    per_host: Arc<Mutex<BTreeMap<String, PerHostLimiterEntry>>>,
+    per_host: Mutex<BTreeMap<String, PerHostLimiterEntry>>,
 }
 
-#[derive(Clone)]
 struct PerHostLimiterEntry {
     semaphore: Arc<BlockingSemaphore>,
     limit: usize,
     last_used_at: Instant,
-}
-
-#[derive(Debug)]
-pub(crate) struct GlobalRequestPermit {
-    _permit: Option<BlockingSemaphorePermit>,
-}
-
-#[derive(Debug)]
-pub(crate) struct HostRequestPermit {
-    _permit: Option<BlockingSemaphorePermit>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,8 +37,9 @@ struct BlockingSemaphore {
 
 impl BlockingSemaphore {
     fn new(permits: usize) -> Self {
+        debug_assert!(permits > 0);
         Self {
-            state: Mutex::new(normalize_concurrency_limit(permits)),
+            state: Mutex::new(permits),
             condvar: Condvar::new(),
         }
     }
@@ -64,7 +52,6 @@ impl BlockingSemaphore {
         *state -= 1;
         Some(BlockingSemaphorePermit {
             semaphore: Arc::clone(self),
-            released: false,
         })
     }
 
@@ -79,7 +66,6 @@ impl BlockingSemaphore {
                 drop(state);
                 return Ok(BlockingSemaphorePermit {
                     semaphore: Arc::clone(self),
-                    released: false,
                 });
             }
 
@@ -121,17 +107,13 @@ impl BlockingSemaphore {
 }
 
 #[derive(Debug)]
-struct BlockingSemaphorePermit {
+pub(crate) struct BlockingSemaphorePermit {
     semaphore: Arc<BlockingSemaphore>,
-    released: bool,
 }
 
 impl Drop for BlockingSemaphorePermit {
     fn drop(&mut self) {
-        if !self.released {
-            self.semaphore.release();
-            self.released = true;
-        }
+        self.semaphore.release();
     }
 }
 
@@ -141,8 +123,8 @@ impl RequestLimiters {
         per_host_limit: Option<usize>,
         clock: Arc<dyn Clock>,
     ) -> Option<Self> {
-        let max_in_flight = normalize_optional_concurrency_limit(max_in_flight);
-        let per_host_limit = normalize_optional_concurrency_limit(per_host_limit);
+        debug_assert!(max_in_flight.is_none_or(|limit| limit > 0));
+        debug_assert!(per_host_limit.is_none_or(|limit| limit > 0));
         if max_in_flight.is_none() && per_host_limit.is_none() {
             return None;
         }
@@ -151,27 +133,31 @@ impl RequestLimiters {
             clock,
             global: max_in_flight.map(|limit| Arc::new(BlockingSemaphore::new(limit))),
             per_host_limit,
-            per_host: Arc::new(Mutex::new(BTreeMap::new())),
+            per_host: Mutex::new(BTreeMap::new()),
         })
     }
 
     pub(crate) fn acquire_global(
         &self,
         deadline_at: Option<Instant>,
-    ) -> Result<GlobalRequestPermit, AcquirePermitError> {
+    ) -> Result<Option<BlockingSemaphorePermit>, AcquirePermitError> {
         let permit = match &self.global {
             Some(semaphore) => Some(semaphore.acquire(deadline_at)?),
             None => None,
         };
-        Ok(GlobalRequestPermit { _permit: permit })
+        Ok(permit)
     }
 
     pub(crate) fn acquire_host(
         &self,
         host: Option<&str>,
         deadline_at: Option<Instant>,
-    ) -> Result<HostRequestPermit, AcquirePermitError> {
-        let host = host.and_then(normalize_host_key);
+    ) -> Result<Option<BlockingSemaphorePermit>, AcquirePermitError> {
+        let host = if self.per_host_limit.is_some() {
+            host.and_then(normalize_host_key)
+        } else {
+            None
+        };
         let permit = match (self.per_host_limit, host) {
             (Some(limit), Some(host)) => {
                 let wait_for_semaphore = {
@@ -190,9 +176,7 @@ impl RequestLimiters {
                     });
                     entry.last_used_at = now;
                     if let Some(permit) = entry.semaphore.try_acquire() {
-                        return Ok(HostRequestPermit {
-                            _permit: Some(permit),
-                        });
+                        return Ok(Some(permit));
                     }
                     Arc::clone(&entry.semaphore)
                 };
@@ -200,7 +184,7 @@ impl RequestLimiters {
             }
             _ => None,
         };
-        Ok(HostRequestPermit { _permit: permit })
+        Ok(permit)
     }
 }
 
@@ -212,18 +196,6 @@ impl PerHostLimiterEntryState for PerHostLimiterEntry {
 
     fn last_used_at(&self) -> Instant {
         self.last_used_at
-    }
-}
-
-impl GlobalRequestPermit {
-    pub(crate) const fn none() -> Self {
-        Self { _permit: None }
-    }
-}
-
-impl HostRequestPermit {
-    pub(crate) const fn none() -> Self {
-        Self { _permit: None }
     }
 }
 
@@ -256,24 +228,6 @@ mod tests {
         let entries = lock_unpoisoned(&limiters.per_host);
         assert!(entries.contains_key("api.example.com"));
         assert_eq!(entries.len(), 1);
-    }
-
-    #[test]
-    fn zero_limits_are_normalized_to_one_permit() {
-        let limiters = RequestLimiters::new(
-            Some(0),
-            Some(0),
-            Arc::new(crate::core::extensions::SystemClock),
-        )
-        .expect("limiters should be built");
-        let deadline_at = Some(Instant::now() + Duration::from_millis(50));
-
-        let _global = limiters
-            .acquire_global(deadline_at)
-            .expect("zero global limit should be normalized");
-        let _host = limiters
-            .acquire_host(Some("api"), deadline_at)
-            .expect("zero host limit should be normalized");
     }
 
     #[test]

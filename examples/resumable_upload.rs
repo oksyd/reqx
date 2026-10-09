@@ -3,28 +3,23 @@ use std::error::Error;
 use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 
-#[cfg(feature = "_async")]
 use reqx::advanced::{
-    AsyncResumableUploadBackend, AsyncResumableUploader, ResumableUploadOptions, UploadedPart,
+    AsyncResumableUploadBackend, ResumableUploadOptions, ResumableUploader, UploadedPart,
 };
-#[cfg(feature = "_async")]
 use thiserror::Error;
 
-#[cfg(feature = "_async")]
 #[derive(Debug, Error)]
 #[error("{message}")]
 struct DemoError {
     message: String,
 }
 
-#[cfg(feature = "_async")]
 #[derive(Default)]
 struct DemoBackend {
     parts: Arc<Mutex<BTreeMap<u32, Vec<u8>>>>,
     fail_once_parts: Arc<Mutex<BTreeSet<u32>>>,
 }
 
-#[cfg(feature = "_async")]
 impl DemoBackend {
     fn fail_once_for_part(&self, part_number: u32) {
         let mut fail_once = self.fail_once_parts.lock().expect("lock fail_once_parts");
@@ -32,7 +27,6 @@ impl DemoBackend {
     }
 }
 
-#[cfg(feature = "_async")]
 impl AsyncResumableUploadBackend for DemoBackend {
     type Error = DemoError;
 
@@ -72,13 +66,12 @@ impl AsyncResumableUploadBackend for DemoBackend {
     }
 }
 
-#[cfg(feature = "_async")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let backend = DemoBackend::default();
     backend.fail_once_for_part(2);
 
-    let first_attempt = AsyncResumableUploader::new(
+    let first_attempt = ResumableUploader::new(
         ResumableUploadOptions::new()
             .with_part_size(4)
             .with_max_attempts(1)
@@ -86,7 +79,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     let mut reader = Cursor::new(b"abcdefgh".to_vec());
     let failure = first_attempt
-        .upload(&backend, &mut reader)
+        .upload_async(&backend, &mut reader)
         .await
         .expect_err("first attempt should fail to demo checkpoint-based resume");
     let checkpoint = failure
@@ -98,7 +91,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         checkpoint.completed_parts.len()
     );
 
-    let resumed = AsyncResumableUploader::new(
+    let resumed = ResumableUploader::new(
         ResumableUploadOptions::new()
             .with_part_size(4)
             .with_max_attempts(2)
@@ -106,16 +99,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     let mut replay_reader = Cursor::new(b"abcdefgh".to_vec());
     let result = resumed
-        .resume(&backend, &mut replay_reader, checkpoint)
+        .resume_async(&backend, &mut replay_reader, checkpoint)
         .await?;
     println!(
         "resumed={} total_parts={} total_bytes={}",
         result.resumed, result.total_parts, result.total_bytes
     );
     Ok(())
-}
-
-#[cfg(not(feature = "_async"))]
-fn main() {
-    eprintln!("enable an `async-tls-*` feature to run this example");
 }

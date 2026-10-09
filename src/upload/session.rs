@@ -1,30 +1,23 @@
 use std::io::{self, Read};
 use std::time::Duration;
 
-use crate::core::util::read_retry_interrupted;
-
 use super::{
-    LEGACY_RESUMABLE_UPLOAD_CHECKPOINT_VERSION, MAX_RESUMABLE_UPLOAD_PART_NUMBER,
-    RESUMABLE_UPLOAD_CHECKPOINT_VERSION, ResumableUploadCheckpoint, ResumableUploadError,
-    ResumableUploadOptions, ResumableUploadResult, UploadedPart, normalize_token,
+    MAX_RESUMABLE_UPLOAD_PART_NUMBER, RESUMABLE_UPLOAD_CHECKPOINT_VERSION,
+    ResumableUploadCheckpoint, ResumableUploadError, ResumableUploadOptions, ResumableUploadResult,
+    UploadedPart, normalize_token,
 };
 
-fn checkpoint_supports_version(version: u32) -> bool {
-    (LEGACY_RESUMABLE_UPLOAD_CHECKPOINT_VERSION..=RESUMABLE_UPLOAD_CHECKPOINT_VERSION)
-        .contains(&version)
-}
-
-fn validate_and_upgrade_checkpoint<E>(
+fn validate_checkpoint<E>(
     options: &ResumableUploadOptions,
-    checkpoint: &mut ResumableUploadCheckpoint,
+    checkpoint: &ResumableUploadCheckpoint,
 ) -> Result<(), ResumableUploadError<E>>
 where
     E: std::error::Error + Send + Sync + 'static,
 {
-    if !checkpoint_supports_version(checkpoint.version) {
+    if checkpoint.version != RESUMABLE_UPLOAD_CHECKPOINT_VERSION {
         return Err(ResumableUploadError::UnsupportedCheckpointVersion {
             checkpoint_version: checkpoint.version,
-            max_supported_version: RESUMABLE_UPLOAD_CHECKPOINT_VERSION,
+            supported_version: RESUMABLE_UPLOAD_CHECKPOINT_VERSION,
         });
     }
 
@@ -39,47 +32,29 @@ where
         return Err(ResumableUploadError::EmptyUploadId);
     }
 
-    match (
-        checkpoint.checksum_algorithm,
-        options.part_checksum_algorithm(),
-    ) {
-        (Some(checkpoint_algorithm), Some(options_algorithm))
-            if checkpoint_algorithm != options_algorithm =>
-        {
-            return Err(ResumableUploadError::CheckpointChecksumAlgorithmMismatch {
-                checkpoint_checksum_algorithm: checkpoint_algorithm.as_str(),
-                options_checksum_algorithm: options_algorithm.as_str(),
-            });
-        }
-        (Some(checkpoint_algorithm), None) => {
-            return Err(ResumableUploadError::CheckpointChecksumAlgorithmMismatch {
-                checkpoint_checksum_algorithm: checkpoint_algorithm.as_str(),
-                options_checksum_algorithm: "none",
-            });
-        }
-        (None, Some(options_algorithm)) => {
-            checkpoint.checksum_algorithm = Some(options_algorithm);
-        }
-        _ => {}
+    if checkpoint.checksum_algorithm != options.part_checksum_algorithm() {
+        return Err(ResumableUploadError::CheckpointChecksumAlgorithmMismatch {
+            checkpoint_checksum_algorithm: checkpoint
+                .checksum_algorithm
+                .map(|algorithm| algorithm.as_str())
+                .unwrap_or("none"),
+            options_checksum_algorithm: options
+                .part_checksum_algorithm()
+                .map(|algorithm| algorithm.as_str())
+                .unwrap_or("none"),
+        });
     }
 
-    if checkpoint.version < RESUMABLE_UPLOAD_CHECKPOINT_VERSION {
-        checkpoint.version = RESUMABLE_UPLOAD_CHECKPOINT_VERSION;
+    for (&checkpoint_key, part) in &checkpoint.completed_parts {
+        if checkpoint_key == 0 || part.part_number != checkpoint_key {
+            return Err(ResumableUploadError::InvalidCheckpointPartNumber {
+                checkpoint_key,
+                part_number: part.part_number,
+            });
+        }
     }
-
-    normalize_checkpoint_part_numbers(checkpoint);
 
     Ok(())
-}
-
-fn normalize_checkpoint_part_numbers(checkpoint: &mut ResumableUploadCheckpoint) {
-    checkpoint.completed_parts.retain(|part_number, part| {
-        if *part_number == 0 {
-            return false;
-        }
-        part.part_number = *part_number;
-        true
-    });
 }
 
 fn checkpoint_part_matches(
@@ -124,45 +99,27 @@ pub(super) fn read_chunk<R>(reader: &mut R, part_size: usize) -> io::Result<Vec<
 where
     R: Read,
 {
-    let mut buffer = vec![0_u8; part_size];
-    let mut read_len = 0_usize;
-
-    while read_len < part_size {
-        let read = read_retry_interrupted(reader, &mut buffer[read_len..])?;
-        if read == 0 {
-            break;
-        }
-        read_len = read_len.saturating_add(read);
-    }
-
-    buffer.truncate(read_len);
+    let mut buffer = Vec::new();
+    reader.take(part_size as u64).read_to_end(&mut buffer)?;
     Ok(buffer)
 }
 
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 pub(super) async fn read_chunk_async<R>(reader: &mut R, part_size: usize) -> io::Result<Vec<u8>>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     use tokio::io::AsyncReadExt;
 
-    let mut buffer = vec![0_u8; part_size];
-    let mut read_len = 0_usize;
-
-    while read_len < part_size {
-        let read = match reader.read(&mut buffer[read_len..]).await {
-            Ok(read) => read,
+    let mut buffer = Vec::new();
+    let mut limited = reader.take(part_size as u64);
+    loop {
+        match limited.read_to_end(&mut buffer).await {
+            Ok(_) => return Ok(buffer),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) => return Err(error),
-        };
-        if read == 0 {
-            break;
         }
-        read_len = read_len.saturating_add(read);
     }
-
-    buffer.truncate(read_len);
-    Ok(buffer)
 }
 
 pub(super) struct UploadPartPlan {
@@ -220,14 +177,14 @@ pub(super) struct ResumableUploadSession<'a> {
 impl<'a> ResumableUploadSession<'a> {
     pub(super) fn new<E>(
         options: &'a ResumableUploadOptions,
-        mut checkpoint: ResumableUploadCheckpoint,
+        checkpoint: ResumableUploadCheckpoint,
         resumed: bool,
     ) -> Result<Self, ResumableUploadError<E>>
     where
         E: std::error::Error + Send + Sync + 'static,
     {
-        options.validate::<E>()?;
-        validate_and_upgrade_checkpoint::<E>(options, &mut checkpoint)?;
+        debug_assert!(options.validate::<E>().is_ok());
+        validate_checkpoint::<E>(options, &checkpoint)?;
         Ok(Self {
             options,
             checkpoint,

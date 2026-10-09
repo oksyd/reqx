@@ -1,12 +1,5 @@
 use std::time::Duration;
 
-#[cfg(any(
-    feature = "async-tls-native",
-    feature = "async-tls-rustls-ring",
-    feature = "async-tls-rustls-aws-lc-rs",
-    feature = "async-tls-rustls-graviola",
-    feature = "async-tls-rustls-no-provider"
-))]
 use reqx::prelude::TlsBackend;
 use reqx::prelude::{Client, TlsRootStore, TlsVersion};
 

@@ -58,7 +58,9 @@ mod tests {
         use tower_service::Service;
         let address = SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 1234));
         let mut config = DnsOverridesBuilder::default();
-        config.insert("nonexistent.invalid", &[address]);
+        config
+            .insert("nonexistent.invalid", &[address])
+            .expect("valid DNS override");
         let mut resolver = OverrideResolver::new(config.build(false).expect("overrides"));
         // GaiResolver needs a Tokio runtime even to start resolving. This test
         // deliberately has none: a matching override must never delegate to it.

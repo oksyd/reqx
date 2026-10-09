@@ -15,6 +15,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_BUILD_WARNINGS: deny
 
 jobs:
   quality:
@@ -68,25 +69,26 @@ jobs:
           cargo fmt --all --check
           cargo check --all-targets
           cargo clippy --all-targets --all-features -- -D warnings
-          cargo +nightly rustdoc --lib --all-features -- --cfg docsrs
+          cargo rustdoc --lib --all-features -- -D warnings
+          cargo +nightly rustdoc --lib --all-features -- --cfg docsrs -D warnings
           cargo test --doc
           cargo test --doc --all-features
           cargo nextest run
           cargo nextest run --all-features
 
   msrv:
-    name: msrv / ubuntu-26.04 / 1.98.1
+    name: msrv / ubuntu-26.04 / 1.99.0
     runs-on: ubuntu-26.04
     timeout-minutes: 20
     env:
-      RUSTUP_TOOLCHAIN: 1.98.1
+      RUSTUP_TOOLCHAIN: 1.99.0
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        run: rustup toolchain install 1.98.1 --profile minimal
+        run: rustup toolchain install 1.99.0 --profile minimal
 
       - name: Rust cache
         uses: actions/cache@v6
@@ -104,48 +106,48 @@ jobs:
       - name: Check default and complete feature sets
         run: |
           cargo check --all-targets
-          cargo check --lib --tests --all-features
+          cargo check --all-targets --all-features
 
   feature-matrix:
     name: feature-matrix / ${{ matrix.name }}
     runs-on: ubuntu-26.04
     timeout-minutes: 20
     env:
-      RUSTUP_TOOLCHAIN: 1.98.1
+      RUSTUP_TOOLCHAIN: 1.99.0
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: async-rustls-ring
-            command: cargo nextest run --tests --no-default-features --features async-tls-rustls-ring,compression,resumable-upload
+            command: cargo nextest run --tests --no-default-features --features async-tls-rustls-ring,compression,resumable-upload-async
           - name: async-rustls-aws-lc-rs
-            command: cargo nextest run --tests --no-default-features --features async-tls-rustls-aws-lc-rs,compression,resumable-upload
+            command: cargo nextest run --tests --no-default-features --features async-tls-rustls-aws-lc-rs,compression,resumable-upload-async
           - name: async-rustls-no-provider
             command: |
-              cargo clippy --all-targets --no-default-features --features async-tls-rustls-no-provider,compression,resumable-upload -- -D warnings
-              cargo nextest run --no-default-features --features async-tls-rustls-no-provider,compression,resumable-upload
+              cargo clippy --all-targets --no-default-features --features async-tls-rustls-no-provider,compression,resumable-upload-async -- -D warnings
+              cargo nextest run --no-default-features --features async-tls-rustls-no-provider,compression,resumable-upload-async
           - name: blocking-rustls-no-provider
             command: |
               cargo clippy --all-targets --no-default-features --features blocking-tls-rustls-no-provider,compression,resumable-upload -- -D warnings
               cargo nextest run --no-default-features --features blocking-tls-rustls-no-provider,compression,resumable-upload
           - name: hybrid-rustls-no-provider
             command: |
-              cargo clippy --all-targets --no-default-features --features async-tls-rustls-no-provider,blocking-tls-rustls-no-provider,compression,resumable-upload -- -D warnings
-              cargo nextest run --no-default-features --features async-tls-rustls-no-provider,blocking-tls-rustls-no-provider,compression,resumable-upload
+              cargo clippy --all-targets --no-default-features --features async-tls-rustls-no-provider,blocking-tls-rustls-no-provider,compression,resumable-upload-async -- -D warnings
+              cargo nextest run --no-default-features --features async-tls-rustls-no-provider,blocking-tls-rustls-no-provider,compression,resumable-upload-async
           - name: async-graviola
             command: |
-              cargo clippy --all-targets --no-default-features --features async-tls-rustls-graviola,compression,resumable-upload -- -D warnings
-              cargo nextest run --no-default-features --features async-tls-rustls-graviola,compression,resumable-upload
+              cargo clippy --all-targets --no-default-features --features async-tls-rustls-graviola,compression,resumable-upload-async -- -D warnings
+              cargo nextest run --no-default-features --features async-tls-rustls-graviola,compression,resumable-upload-async
           - name: blocking-graviola
             command: |
               cargo clippy --all-targets --no-default-features --features blocking-tls-rustls-graviola,compression,resumable-upload -- -D warnings
               cargo nextest run --no-default-features --features blocking-tls-rustls-graviola,compression,resumable-upload
           - name: hybrid-graviola
             command: |
-              cargo clippy --all-targets --no-default-features --features async-tls-rustls-graviola,blocking-tls-rustls-graviola,compression,resumable-upload -- -D warnings
-              cargo nextest run --no-default-features --features async-tls-rustls-graviola,blocking-tls-rustls-graviola,compression,resumable-upload
+              cargo clippy --all-targets --no-default-features --features async-tls-rustls-graviola,blocking-tls-rustls-graviola,compression,resumable-upload-async -- -D warnings
+              cargo nextest run --no-default-features --features async-tls-rustls-graviola,blocking-tls-rustls-graviola,compression,resumable-upload-async
           - name: hybrid-graviola-no-provider
-            command: cargo nextest run --no-default-features --features async-tls-rustls-graviola,blocking-tls-rustls-graviola,async-tls-rustls-no-provider,blocking-tls-rustls-no-provider,compression,resumable-upload
+            command: cargo nextest run --no-default-features --features async-tls-rustls-graviola,blocking-tls-rustls-graviola,async-tls-rustls-no-provider,blocking-tls-rustls-no-provider,compression,resumable-upload-async
           - name: graviola-dependencies
             command: |
               graph=$(mktemp)
@@ -177,7 +179,7 @@ jobs:
               grep -Eq '^ring v' "$graph"
               rm "$graph"
           - name: async-native
-            command: cargo nextest run --tests --no-default-features --features async-tls-native,compression,resumable-upload
+            command: cargo nextest run --tests --no-default-features --features async-tls-native,compression,resumable-upload-async
           - name: blocking-rustls-ring
             command: cargo nextest run --tests --no-default-features --features blocking-tls-rustls-ring,compression,resumable-upload
           - name: blocking-rustls-aws-lc-rs
@@ -216,6 +218,17 @@ jobs:
             command: cargo test --lib --no-default-features --features compression-zstd
           - name: resumable-upload-only
             command: cargo test --lib --no-default-features --features resumable-upload
+          - name: resumable-upload-async-only
+            command: |
+              cargo clippy --all-targets --no-default-features --features resumable-upload-async -- -D warnings
+              cargo nextest run --lib --no-default-features --features resumable-upload-async
+              graph=$(mktemp)
+              cargo tree --no-default-features --features resumable-upload-async -e normal,build --prefix none --format '{p}' > "$graph"
+              if grep -Eq '^(hyper|hyper-util|ureq|rustls|native-tls|ring|aws-lc-rs|aws-lc-sys|graviola|rustls-graviola) v' "$graph"; then
+                cat "$graph"
+                exit 1
+              fi
+              rm "$graph"
           - name: otel-only
             command: cargo check --lib --no-default-features --features otel
 
@@ -224,7 +237,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        run: rustup toolchain install 1.98.1 --profile minimal --component clippy
+        run: rustup toolchain install 1.99.0 --profile minimal --component clippy
 
       - name: Rust cache
         uses: actions/cache@v6

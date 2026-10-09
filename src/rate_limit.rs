@@ -183,14 +183,6 @@ impl RateLimitPolicy {
         self
     }
 
-    fn normalize(self) -> Self {
-        Self {
-            requests_per_second: normalize_requests_per_second(self.requests_per_second),
-            burst: self.burst.max(1),
-            max_throttle_delay: self.max_throttle_delay,
-        }
-    }
-
     pub(crate) fn validate(self) -> crate::Result<()> {
         if !self.requests_per_second.is_finite() || self.requests_per_second <= 0.0 {
             return Err(Error::InvalidRateLimitPolicy {
@@ -207,26 +199,6 @@ impl RateLimitPolicy {
             });
         }
         Ok(())
-    }
-
-    fn configured_requests_per_second(self) -> f64 {
-        self.requests_per_second
-    }
-
-    fn configured_burst(self) -> usize {
-        self.burst
-    }
-
-    fn configured_max_throttle_delay(self) -> Duration {
-        self.max_throttle_delay
-    }
-}
-
-fn normalize_requests_per_second(requests_per_second: f64) -> f64 {
-    if requests_per_second.is_finite() && requests_per_second > 0.0 {
-        requests_per_second
-    } else {
-        1.0
     }
 }
 
@@ -246,10 +218,10 @@ struct TokenBucket {
 
 impl TokenBucket {
     fn new(policy: RateLimitPolicy, now: Instant) -> Self {
-        let policy = policy.normalize();
+        debug_assert!(policy.validate().is_ok());
         Self {
             policy,
-            tokens: policy.configured_burst() as f64,
+            tokens: policy.burst as f64,
             last_refill_at: now,
             throttle_until: None,
         }
@@ -261,8 +233,8 @@ impl TokenBucket {
         }
         let elapsed_secs = now.duration_since(self.last_refill_at).as_secs_f64();
         self.last_refill_at = now;
-        let replenished = elapsed_secs * self.policy.configured_requests_per_second();
-        self.tokens = (self.tokens + replenished).min(self.policy.configured_burst() as f64);
+        let replenished = elapsed_secs * self.policy.requests_per_second;
+        self.tokens = (self.tokens + replenished).min(self.policy.burst as f64);
         if let Some(throttle_until) = self.throttle_until
             && now >= throttle_until
         {
@@ -281,7 +253,7 @@ impl TokenBucket {
             return Duration::ZERO;
         }
 
-        let rate = self.policy.configured_requests_per_second();
+        let rate = self.policy.requests_per_second;
         let needed_tokens = (1.0 - self.tokens).max(0.0);
         let delay_secs = needed_tokens / rate;
         // Zero means acquisition succeeded and a token was consumed. Rounding
@@ -305,12 +277,12 @@ impl TokenBucket {
     }
 
     fn is_idle(&self, now: Instant) -> bool {
-        self.tokens >= self.policy.configured_burst() as f64
+        self.tokens >= self.policy.burst as f64
             && self.throttle_until.is_none_or(|until| now >= until)
     }
 
     fn apply_throttle(&mut self, now: Instant, delay: Duration) {
-        let capped_delay = delay.min(self.policy.configured_max_throttle_delay());
+        let capped_delay = delay.min(self.policy.max_throttle_delay);
         if capped_delay.is_zero() {
             return;
         }
@@ -353,7 +325,7 @@ impl RateLimiter {
         Some(Self {
             clock,
             global: global_policy.map(|policy| Mutex::new(TokenBucket::new(policy, now))),
-            per_host_policy: per_host_policy.map(RateLimitPolicy::normalize),
+            per_host_policy,
             per_host: Mutex::new(BTreeMap::new()),
             per_host_cleanup_origin: now,
             per_host_last_cleanup_ms: AtomicU64::new(0),
@@ -362,66 +334,49 @@ impl RateLimiter {
 
     pub(crate) fn acquire_delay(&self, host: Option<&str>) -> Duration {
         let now = self.clock.now_monotonic();
-        let host_key = host.and_then(normalize_host_key);
-
         let mut global_bucket = self.global.as_ref().map(lock_unpoisoned);
-        let mut per_host = lock_unpoisoned(&self.per_host);
-        self.maybe_cleanup_stale_per_host_rate_limits(&mut per_host, now);
-
-        let global_ready = global_bucket
-            .as_mut()
-            .is_none_or(|bucket| bucket.can_consume_now(now));
-        let per_host_ready = match (self.per_host_policy, host_key.as_ref()) {
-            (Some(policy), Some(host)) => {
-                let entry = per_host
-                    .entry(host.clone())
+        let mut per_host = self
+            .per_host_policy
+            .map(|_| lock_unpoisoned(&self.per_host));
+        if let Some(entries) = per_host.as_mut() {
+            self.maybe_cleanup_stale_per_host_rate_limits(entries, now);
+        }
+        let mut host_bucket = match (self.per_host_policy, host, per_host.as_mut()) {
+            (Some(policy), Some(host), Some(entries)) => normalize_host_key(host).map(|host| {
+                let entry = entries
+                    .entry(host)
                     .or_insert_with(|| PerHostRateLimitEntry {
                         bucket: TokenBucket::new(policy, now),
                         last_used_at: now,
                     });
                 entry.last_used_at = now;
-                entry.bucket.can_consume_now(now)
-            }
-            _ => true,
+                &mut entry.bucket
+            }),
+            _ => None,
         };
 
-        if !global_ready || !per_host_ready {
-            let global_wait = if global_ready {
-                Duration::ZERO
-            } else {
-                global_bucket
-                    .as_mut()
-                    .map_or(Duration::ZERO, |bucket| bucket.wait_duration(now))
-            };
-            let per_host_wait = if per_host_ready {
-                Duration::ZERO
-            } else {
-                match (self.per_host_policy, host_key.as_ref()) {
-                    (Some(policy), Some(host)) => {
-                        let entry =
-                            per_host
-                                .entry(host.clone())
-                                .or_insert_with(|| PerHostRateLimitEntry {
-                                    bucket: TokenBucket::new(policy, now),
-                                    last_used_at: now,
-                                });
-                        entry.last_used_at = now;
-                        entry.bucket.wait_duration(now)
-                    }
-                    _ => Duration::ZERO,
-                }
-            };
-            return global_wait.max(per_host_wait);
+        let global_ready = global_bucket
+            .as_mut()
+            .is_none_or(|bucket| bucket.can_consume_now(now));
+        let host_ready = host_bucket
+            .as_mut()
+            .is_none_or(|bucket| bucket.can_consume_now(now));
+
+        if !global_ready || !host_ready {
+            let global_wait = global_bucket
+                .as_mut()
+                .map_or(Duration::ZERO, |bucket| bucket.wait_duration(now));
+            let host_wait = host_bucket
+                .as_mut()
+                .map_or(Duration::ZERO, |bucket| bucket.wait_duration(now));
+            return global_wait.max(host_wait);
         }
 
         if let Some(bucket) = global_bucket.as_mut() {
             bucket.consume_ready_token();
         }
-        if let Some(host) = host_key.as_ref()
-            && let Some(entry) = per_host.get_mut(host)
-        {
-            entry.last_used_at = now;
-            entry.bucket.consume_ready_token();
+        if let Some(bucket) = host_bucket.as_mut() {
+            bucket.consume_ready_token();
         }
 
         Duration::ZERO
@@ -926,18 +881,6 @@ mod tests {
             server_throttle_scope_from_headers(&headers),
             Some(ServerThrottleScope::Global)
         );
-    }
-
-    #[test]
-    fn rate_limit_policy_normalizes_invalid_request_rate() {
-        let now = Instant::now();
-
-        for invalid_rate in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let policy = RateLimitPolicy::standard().requests_per_second(invalid_rate);
-            let bucket = TokenBucket::new(policy, now);
-
-            assert_eq!(bucket.policy.configured_requests_per_second(), 1.0);
-        }
     }
 
     #[test]

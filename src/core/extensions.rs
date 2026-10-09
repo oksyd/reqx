@@ -1,39 +1,21 @@
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
-use bytes::Bytes;
-use http::{HeaderMap, Method};
+use http::Method;
 
-use crate::core::content_encoding::{
-    DecodeContentEncodingError, decode_content_encoded_body_limited,
-};
-use crate::core::error::Error;
 use crate::core::retry::RetryPolicy;
+use crate::core::util::validate_base_url;
 
 /// Chooses the base URL used for an outbound request.
 pub trait EndpointSelector: Send + Sync {
     /// Returns the base URL that should be used for this request.
-    fn select_base_url(
-        &self,
+    fn select_base_url<'a>(
+        &'a self,
         method: &Method,
         path: &str,
-        configured_base_url: &str,
-    ) -> crate::Result<String>;
-}
-
-#[derive(Debug, Default)]
-/// Endpoint selector that always uses the configured base URL.
-pub struct PrimaryEndpointSelector;
-
-impl EndpointSelector for PrimaryEndpointSelector {
-    fn select_base_url(
-        &self,
-        _method: &Method,
-        _path: &str,
-        configured_base_url: &str,
-    ) -> crate::Result<String> {
-        Ok(configured_base_url.to_owned())
-    }
+        configured_base_url: &'a str,
+    ) -> crate::Result<Cow<'a, str>>;
 }
 
 #[derive(Debug)]
@@ -44,32 +26,39 @@ pub struct RoundRobinEndpointSelector {
 }
 
 impl RoundRobinEndpointSelector {
-    /// Creates a selector that rotates through `endpoints`.
-    pub fn new<I, S>(endpoints: I) -> Self
+    /// Creates a selector that rotates through nonempty, valid HTTP(S) base URLs.
+    ///
+    /// Empty lists and invalid URLs are rejected immediately.
+    pub fn new<I, S>(endpoints: I) -> crate::Result<Self>
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        let endpoints = endpoints.into_iter().map(Into::into).collect();
-        Self {
+        let endpoints: Vec<String> = endpoints.into_iter().map(Into::into).collect();
+        if endpoints.is_empty() {
+            return Err(crate::Error::InvalidEndpointConfig {
+                message: "at least one endpoint is required",
+            });
+        }
+        for endpoint in &endpoints {
+            validate_base_url(endpoint)?;
+        }
+        Ok(Self {
             endpoints,
             next: AtomicUsize::new(0),
-        }
+        })
     }
 }
 
 impl EndpointSelector for RoundRobinEndpointSelector {
-    fn select_base_url(
-        &self,
+    fn select_base_url<'a>(
+        &'a self,
         _method: &Method,
         _path: &str,
-        configured_base_url: &str,
-    ) -> crate::Result<String> {
-        if self.endpoints.is_empty() {
-            return Ok(configured_base_url.to_owned());
-        }
+        _configured_base_url: &'a str,
+    ) -> crate::Result<Cow<'a, str>> {
         let index = self.next.fetch_add(1, Ordering::Relaxed);
-        Ok(self.endpoints[index % self.endpoints.len()].clone())
+        Ok(Cow::Borrowed(&self.endpoints[index % self.endpoints.len()]))
     }
 }
 
@@ -77,16 +66,6 @@ impl EndpointSelector for RoundRobinEndpointSelector {
 pub trait BackoffSource: Send + Sync {
     /// Returns the retry backoff for `attempt`.
     fn backoff_for_retry(&self, retry_policy: &RetryPolicy, attempt: usize) -> Duration;
-}
-
-#[derive(Debug, Default)]
-/// Backoff source that delegates to [`RetryPolicy`] backoff settings.
-pub struct PolicyBackoffSource;
-
-impl BackoffSource for PolicyBackoffSource {
-    fn backoff_for_retry(&self, retry_policy: &RetryPolicy, attempt: usize) -> Duration {
-        RetryPolicy::backoff_for_retry(retry_policy, attempt)
-    }
 }
 
 /// Time source used by retry/resilience bookkeeping and other internal control loops.
@@ -231,85 +210,6 @@ fn looks_like_token(segment: &str) -> bool {
     segment.chars().all(|character| {
         character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '~' | '.' | '=' | '+')
     })
-}
-
-/// Decodes response bodies before buffered helpers expose them to callers.
-pub trait BodyCodec: Send + Sync {
-    /// Decodes a response body while enforcing `max_response_body_bytes`.
-    fn decode_response_body_limited(
-        &self,
-        body: Bytes,
-        headers: &HeaderMap,
-        max_response_body_bytes: usize,
-        method: &Method,
-        uri: &str,
-    ) -> Result<Bytes, Error>;
-}
-
-pub(crate) fn decode_response_body_with_codec_limited(
-    body_codec: &dyn BodyCodec,
-    body: Bytes,
-    headers: &HeaderMap,
-    max_response_body_bytes: usize,
-    method: &Method,
-    uri: &str,
-) -> Result<Bytes, Error> {
-    let decoded = body_codec.decode_response_body_limited(
-        body,
-        headers,
-        max_response_body_bytes,
-        method,
-        uri,
-    )?;
-    if decoded.len() > max_response_body_bytes {
-        return Err(Error::ResponseBodyTooLarge {
-            limit_bytes: max_response_body_bytes,
-            actual_bytes: decoded.len(),
-            method: method.clone(),
-            uri: uri.to_owned(),
-        });
-    }
-    Ok(decoded)
-}
-
-#[derive(Debug, Default)]
-/// Standard response body codec that honors `Content-Encoding`.
-pub struct StandardBodyCodec;
-
-impl BodyCodec for StandardBodyCodec {
-    fn decode_response_body_limited(
-        &self,
-        body: Bytes,
-        headers: &HeaderMap,
-        max_response_body_bytes: usize,
-        method: &Method,
-        uri: &str,
-    ) -> Result<Bytes, Error> {
-        decode_content_encoded_body_limited(body, headers, max_response_body_bytes)
-            .map_err(|error| map_decode_error(error, max_response_body_bytes, method, uri))
-    }
-}
-
-fn map_decode_error(
-    error: DecodeContentEncodingError,
-    max_response_body_bytes: usize,
-    method: &Method,
-    uri: &str,
-) -> Error {
-    match error {
-        DecodeContentEncodingError::Decode { encoding, message } => Error::DecodeContentEncoding {
-            encoding,
-            message,
-            method: method.clone(),
-            uri: uri.to_owned(),
-        },
-        DecodeContentEncodingError::TooLarge { actual_bytes } => Error::ResponseBodyTooLarge {
-            limit_bytes: max_response_body_bytes,
-            actual_bytes,
-            method: method.clone(),
-            uri: uri.to_owned(),
-        },
-    }
 }
 
 #[cfg(test)]

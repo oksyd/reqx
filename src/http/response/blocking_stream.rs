@@ -6,7 +6,7 @@ use bytes::Bytes;
 use http::{HeaderMap, StatusCode};
 use serde::de::DeserializeOwned;
 
-use crate::blocking_client::limiters::{GlobalRequestPermit, HostRequestPermit};
+use crate::blocking_client::limiters::BlockingSemaphorePermit;
 use crate::blocking_client::transport::is_timeout_io_error;
 use crate::core::content_encoding::{
     decode_content_encoded_body_limited, should_decode_content_encoded_body,
@@ -14,7 +14,7 @@ use crate::core::content_encoding::{
 use crate::core::error::{Error, TimeoutPhase};
 use crate::core::util::{duration_from_millis_saturating, saturating_u64_to_usize};
 
-use crate::core::execution::lifecycle::{self, StreamLifecycle};
+use crate::core::execution::lifecycle::StreamLifecycle;
 use crate::core::metrics::StreamCompletion;
 
 use super::{Response, deadline_elapsed, deadline_limits_wait, deadline_within_slack};
@@ -79,9 +79,9 @@ pub struct BlockingResponseStream {
     total_timeout_ms: Option<u128>,
     deadline_at: Option<Instant>,
     deadline_slack: Duration,
-    lifecycle: Option<StreamLifecycle>,
-    _global_permit: Option<GlobalRequestPermit>,
-    _host_permit: Option<HostRequestPermit>,
+    lifecycle: StreamLifecycle,
+    _global_permit: Option<BlockingSemaphorePermit>,
+    _host_permit: Option<BlockingSemaphorePermit>,
 }
 
 pub(crate) struct BlockingResponseStreamContext {
@@ -92,9 +92,9 @@ pub(crate) struct BlockingResponseStreamContext {
     pub(crate) total_timeout_ms: Option<u128>,
     pub(crate) deadline_at: Option<Instant>,
     pub(crate) deadline_slack: Duration,
-    pub(crate) lifecycle: Option<StreamLifecycle>,
-    pub(crate) global_permit: Option<GlobalRequestPermit>,
-    pub(crate) host_permit: Option<HostRequestPermit>,
+    pub(crate) lifecycle: StreamLifecycle,
+    pub(crate) global_permit: Option<BlockingSemaphorePermit>,
+    pub(crate) host_permit: Option<BlockingSemaphorePermit>,
 }
 
 impl BlockingResponseStream {
@@ -134,7 +134,7 @@ impl BlockingResponseStream {
     }
 
     pub(crate) fn attach_completion(&mut self, completion: StreamCompletion) {
-        lifecycle::attach_completion(&mut self.lifecycle, completion);
+        self.lifecycle.attach_completion(completion);
     }
 
     /// Returns the HTTP status code.
@@ -150,11 +150,6 @@ impl BlockingResponseStream {
     /// Returns the originating request method.
     pub fn method(&self) -> &http::Method {
         &self.method
-    }
-
-    /// Returns the original request URI, including query string.
-    pub fn uri(&self) -> &str {
-        self.uri_raw()
     }
 
     /// Returns the original request URI, including query string.
@@ -401,7 +396,7 @@ impl BlockingResponseStream {
         let should_decode = should_decode_content_encoded_body(&method, status, body.len());
         let body = if should_decode {
             decode_content_encoded_body_limited(body, &headers, max_bytes).map_err(|error| {
-                let error = super::map_decode_body_error(error, &method, &uri_redacted, max_bytes);
+                let error = error.into_error(&method, &uri_redacted, max_bytes);
                 self.complete_error(&error);
                 error
             })?
@@ -423,13 +418,13 @@ impl BlockingResponseStream {
     /// Buffers the stream as UTF-8 text, enforcing `max_bytes`.
     pub fn into_text_limited(self, max_bytes: usize) -> crate::Result<String> {
         let response = self.into_response_limited(max_bytes)?;
-        response.text().map(ToOwned::to_owned)
+        response.into_text()
     }
 
     /// Buffers the stream as lossy UTF-8 text, enforcing `max_bytes`.
     pub fn into_text_lossy_limited(self, max_bytes: usize) -> crate::Result<String> {
         let response = self.into_response_limited(max_bytes)?;
-        Ok(response.text_lossy())
+        Ok(response.into_text_lossy())
     }
 
     /// Buffers and deserializes the stream from JSON, enforcing `max_bytes`.
@@ -449,12 +444,12 @@ impl BlockingResponseStream {
 
     fn complete_success(&mut self) {
         self.release_transport();
-        lifecycle::complete_success(&mut self.lifecycle);
+        self.lifecycle.complete_success();
     }
 
     fn complete_error(&mut self, error: &Error) {
         self.release_transport();
-        lifecycle::complete_error(&mut self.lifecycle, error);
+        self.lifecycle.complete_error(error);
     }
 }
 
@@ -470,7 +465,7 @@ impl std::fmt::Debug for BlockingResponseStream {
             .field("total_timeout_ms", &self.total_timeout_ms)
             .field("deadline_at", &self.deadline_at)
             .field("deadline_slack", &self.deadline_slack)
-            .field("has_lifecycle", &self.lifecycle.is_some())
+            .field("lifecycle", &self.lifecycle)
             .finish()
     }
 }

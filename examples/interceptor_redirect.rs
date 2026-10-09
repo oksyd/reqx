@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use http::header::{HeaderName, HeaderValue};
@@ -45,10 +46,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::builder("https://postman-echo.com")
         .connect_timeout(Duration::from_secs(2))
         .request_timeout(Duration::from_secs(4))
-        .total_timeout(Duration::from_secs(8))
+        .total_timeout(Some(Duration::from_secs(8)))
         .redirect_policy(RedirectPolicy::limited(5))
         .retry_policy(RetryPolicy::standard())
-        .interceptor(TraceInterceptor)
+        .interceptor(Arc::new(TraceInterceptor))
         .build()?;
 
     let response = client.get("/redirect-to?url=%2Fget").send().await?;

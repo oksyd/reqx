@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 #[cfg(any(feature = "_async", feature = "_blocking"))]
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -11,13 +12,12 @@ use crate::core::error::{Error, TimeoutPhase, TransportErrorKind};
 use crate::core::execution::lifecycle::{StreamLifecycle, StreamOutcomeHooks};
 use crate::core::extensions::{BackoffSource, Clock, EndpointSelector};
 use crate::core::policy::{RedirectPolicy, RequestContext, StatusPolicy};
-use crate::core::request_builder::{
-    EffectiveRequestExecutionOptions, RequestExecutionDefaults, RequestExecutionOptions,
-};
+use crate::core::request_body::RequestBody;
+use crate::core::request_builder::{RequestExecutionOptions, RequestExecutionOverrides};
 use crate::core::retry::{RetryDecision, RetryEligibility, RetryPolicy, RetryReason};
 use crate::core::util::{
-    bounded_retry_delay, deadline_exceeded_error, duration_millis_ceil, is_redirect_status,
-    merge_headers, parse_retry_after, parse_retry_after_capped, phase_timeout,
+    bounded_retry_delay, deadline_exceeded_error, duration_millis_ceil, ensure_accept_encoding,
+    is_redirect_status, merge_headers, parse_retry_after, parse_retry_after_capped, phase_timeout,
     rate_limit_bucket_key, redact_uri_for_logs, redirect_location, redirect_method,
     resolve_redirect_uri, resolve_uri, same_origin, sanitize_headers_for_redirect,
     total_timeout_deadline, total_timeout_expired, truncate_body, validate_base_url,
@@ -34,25 +34,24 @@ pub(crate) struct RetryRequestInput<Body> {
     pub(crate) redacted_uri_text: String,
     pub(crate) merged_headers: HeaderMap,
     pub(crate) body: Body,
-    pub(crate) execution_options: EffectiveRequestExecutionOptions,
+    pub(crate) execution_options: RequestExecutionOptions,
 }
 
 pub(crate) struct RequestExecutionPreparation<'a, Body> {
-    pub(crate) endpoint_selector: &'a dyn EndpointSelector,
+    pub(crate) endpoint_selector: Option<&'a dyn EndpointSelector>,
     pub(crate) configured_base_url: &'a str,
     pub(crate) method: Method,
     pub(crate) path: String,
     pub(crate) default_headers: &'a HeaderMap,
     pub(crate) headers: HeaderMap,
     pub(crate) body: Option<Body>,
-    pub(crate) execution_options: RequestExecutionOptions,
-    pub(crate) defaults: RequestExecutionDefaults<'a>,
+    pub(crate) execution_options: RequestExecutionOverrides,
+    pub(crate) defaults: &'a RequestExecutionOptions,
+    pub(crate) default_auto_accept_encoding: bool,
 }
 
-pub(crate) fn prepare_retry_request_input<Body>(
+pub(crate) fn prepare_retry_request_input<Body: Default>(
     input: RequestExecutionPreparation<'_, Body>,
-    default_body: impl FnOnce() -> Body,
-    ensure_auto_accept_encoding: impl FnOnce(&Method, &mut HeaderMap),
 ) -> Result<RetryRequestInput<Body>, Error> {
     let RequestExecutionPreparation {
         endpoint_selector,
@@ -64,19 +63,23 @@ pub(crate) fn prepare_retry_request_input<Body>(
         body,
         execution_options,
         defaults,
+        default_auto_accept_encoding,
     } = input;
 
     let base_url = select_base_url(endpoint_selector, &method, &path, configured_base_url)?;
     let (uri_text, uri) = resolve_uri(&base_url, &path)?;
     let redacted_uri_text = redact_uri_for_logs(&uri_text);
+    let auto_accept_encoding = execution_options
+        .auto_accept_encoding
+        .unwrap_or(default_auto_accept_encoding);
     let execution_options = execution_options.resolve(defaults)?;
     let has_request_content_length = headers.contains_key(CONTENT_LENGTH);
-    let mut merged_headers = merge_headers(default_headers, &headers);
+    let mut merged_headers = merge_headers(default_headers, headers);
     if !has_request_content_length {
         merged_headers.remove(CONTENT_LENGTH);
     }
-    if execution_options.auto_accept_encoding {
-        ensure_auto_accept_encoding(&method, &mut merged_headers);
+    if auto_accept_encoding {
+        ensure_accept_encoding(&method, &mut merged_headers);
     }
 
     Ok(RetryRequestInput {
@@ -84,7 +87,7 @@ pub(crate) fn prepare_retry_request_input<Body>(
         uri,
         redacted_uri_text,
         merged_headers,
-        body: body.unwrap_or_else(default_body),
+        body: body.unwrap_or_default(),
         execution_options,
     })
 }
@@ -105,28 +108,8 @@ impl ResponseMode {
     }
 }
 
-pub(crate) struct RequestExecutionStateInput {
-    pub(crate) method: Method,
-    pub(crate) uri: Uri,
-    pub(crate) redacted_uri_text: String,
-    pub(crate) merged_headers: HeaderMap,
-    pub(crate) body_replayable: bool,
-    pub(crate) retry_policy: RetryPolicy,
-    pub(crate) redirect_policy: RedirectPolicy,
-    pub(crate) status_policy: StatusPolicy,
-    pub(crate) timeout_value: Duration,
-    pub(crate) total_timeout: Option<Duration>,
-    pub(crate) max_response_body_bytes: usize,
-    pub(crate) request_started_at: Instant,
-}
-
 pub(crate) struct RequestExecutionState {
-    retry_policy: RetryPolicy,
-    redirect_policy: RedirectPolicy,
-    status_policy: StatusPolicy,
-    timeout_value: Duration,
-    total_timeout: Option<Duration>,
-    max_response_body_bytes: usize,
+    options: RequestExecutionOptions,
     request_started_at: Instant,
     attempt: usize,
     max_attempts: usize,
@@ -139,48 +122,42 @@ pub(crate) struct RequestExecutionState {
 }
 
 impl RequestExecutionState {
-    pub(crate) fn new(
-        input: RequestExecutionStateInput,
+    pub(crate) fn from_request<Stream>(
+        input: RetryRequestInput<RequestBody<Stream>>,
+        request_started_at: Instant,
         retry_eligibility: &dyn RetryEligibility,
-    ) -> Self {
-        let RequestExecutionStateInput {
+    ) -> (Self, RequestBody<Stream>) {
+        let RetryRequestInput {
             method,
             uri,
             redacted_uri_text,
             merged_headers,
-            body_replayable,
-            retry_policy,
-            redirect_policy,
-            status_policy,
-            timeout_value,
-            total_timeout,
-            max_response_body_bytes,
-            request_started_at,
+            body,
+            execution_options,
         } = input;
+        let body_replayable = body.is_replayable();
         let max_attempts =
             if retry_eligibility.supports_retry(&method, &merged_headers) && body_replayable {
-                retry_policy.configured_max_attempts()
+                execution_options.retry_policy.configured_max_attempts()
             } else {
                 1
             };
 
-        Self {
-            retry_policy,
-            redirect_policy,
-            status_policy,
-            timeout_value,
-            total_timeout,
-            max_response_body_bytes,
-            request_started_at,
-            attempt: 1,
-            max_attempts,
-            redirect_count: 0,
-            current_method: method,
-            current_uri: uri,
-            current_redacted_uri: redacted_uri_text,
-            current_headers: merged_headers,
-            body_replayable,
-        }
+        (
+            Self {
+                options: execution_options,
+                request_started_at,
+                attempt: 1,
+                max_attempts,
+                redirect_count: 0,
+                current_method: method,
+                current_uri: uri,
+                current_redacted_uri: redacted_uri_text,
+                current_headers: merged_headers,
+                body_replayable,
+            },
+            body,
+        )
     }
 
     pub(crate) const fn can_attempt(&self) -> bool {
@@ -198,7 +175,7 @@ impl RequestExecutionState {
     }
 
     pub(crate) const fn total_timeout(&self) -> Option<Duration> {
-        self.total_timeout
+        self.options.total_timeout
     }
 
     pub(crate) fn request_started_at(&self) -> Instant {
@@ -245,7 +222,7 @@ impl RequestExecutionState {
     }
 
     pub(crate) fn stream_timing(&self) -> StreamTiming {
-        stream_timing(self.total_timeout, self.request_started_at)
+        stream_timing(self.options.total_timeout, self.request_started_at)
     }
 
     pub(crate) fn rate_limit_host(&self) -> Option<String> {
@@ -254,15 +231,15 @@ impl RequestExecutionState {
 
     pub(crate) fn phase_timeout(&self) -> Option<Duration> {
         phase_timeout(
-            self.timeout_value,
-            self.total_timeout,
+            self.options.request_timeout,
+            self.options.total_timeout,
             self.request_started_at,
         )
     }
 
     pub(crate) fn deadline_error(&self) -> Error {
         deadline_exceeded_error(
-            self.total_timeout,
+            self.options.total_timeout,
             &self.current_method,
             &self.current_redacted_uri,
         )
@@ -270,7 +247,7 @@ impl RequestExecutionState {
 
     pub(crate) fn transport_timeout_error(&self, timeout_ms: u128) -> Error {
         transport_timeout_error(
-            self.total_timeout,
+            self.options.total_timeout,
             self.request_started_at,
             timeout_ms,
             &self.current_method,
@@ -278,8 +255,8 @@ impl RequestExecutionState {
         )
     }
 
-    pub(crate) fn retry_backoff(&self, backoff_source: &dyn BackoffSource) -> Duration {
-        backoff_source.backoff_for_retry(&self.retry_policy, self.attempt)
+    pub(crate) fn retry_backoff(&self, backoff_source: Option<&dyn BackoffSource>) -> Duration {
+        retry_backoff(&self.options.retry_policy, backoff_source, self.attempt)
     }
 
     pub(crate) fn status_retry_plan(
@@ -287,20 +264,23 @@ impl RequestExecutionState {
         status: StatusCode,
         headers: &HeaderMap,
         clock: &dyn Clock,
-        backoff_source: &dyn BackoffSource,
+        backoff_source: Option<&dyn BackoffSource>,
     ) -> RetryPlan {
-        let fallback_delay = self.retry_backoff(backoff_source);
-        status_retry_plan(StatusRetryPlanInput {
-            attempt: self.attempt,
-            max_attempts: self.max_attempts,
-            method: &self.current_method,
-            redacted_uri: &self.current_redacted_uri,
-            status,
-            headers,
-            clock,
-            fallback_delay,
-            max_delay: self.retry_policy.configured_max_backoff(),
-        })
+        RetryPlan {
+            decision: status_retry_decision(
+                self.attempt,
+                self.max_attempts,
+                &self.current_method,
+                &self.current_redacted_uri,
+                status,
+            ),
+            delay: status_retry_delay(
+                clock,
+                headers,
+                self.retry_backoff(backoff_source),
+                self.options.retry_policy.configured_max_backoff(),
+            ),
+        }
     }
 
     #[cfg(feature = "_async")]
@@ -326,7 +306,7 @@ impl RequestExecutionState {
     pub(crate) fn transport_failure_plan(
         &self,
         error: &Error,
-        backoff_source: &dyn BackoffSource,
+        backoff_source: Option<&dyn BackoffSource>,
     ) -> TransportFailurePlan {
         if let Some(decision) = self.transport_retry_decision_from_error(error) {
             return TransportFailurePlan::Retry(RetryPlan {
@@ -353,24 +333,24 @@ impl RequestExecutionState {
     ) -> BodyReadRetryContext<'a> {
         BodyReadRetryContext {
             context,
-            max_response_body_bytes: self.max_response_body_bytes,
+            max_response_body_bytes: self.options.max_response_body_bytes,
             read_timeout,
-            total_timeout: self.total_timeout,
+            total_timeout: self.options.total_timeout,
             request_started_at: self.request_started_at,
             method: &self.current_method,
             redacted_uri: &self.current_redacted_uri,
-            retry_policy: &self.retry_policy,
+            retry_policy: &self.options.retry_policy,
             max_attempts: self.max_attempts,
             attempt: &mut self.attempt,
         }
     }
 
     pub(crate) fn non_success_completion(&self, status: StatusCode) -> RequestCompletion {
-        RequestCompletion::from_response_status(&self.retry_policy, status)
+        RequestCompletion::from_response_status(&self.options.retry_policy, status)
     }
 
     pub(crate) const fn should_return_non_success_response(&self) -> bool {
-        should_return_non_success_response(self.status_policy)
+        should_return_non_success_response(self.options.status_policy)
     }
 
     pub(crate) fn terminal_non_success(
@@ -385,14 +365,14 @@ impl RequestExecutionState {
             &self.current_redacted_uri,
             headers,
             body,
-            &self.retry_policy,
+            &self.options.retry_policy,
         )
     }
 
     pub(crate) fn retry_attempt(&mut self) -> RetryAttemptState<'_> {
         RetryAttemptState {
-            retry_policy: &self.retry_policy,
-            total_timeout: self.total_timeout,
+            retry_policy: &self.options.retry_policy,
+            total_timeout: self.options.total_timeout,
             request_started_at: self.request_started_at,
             method: &self.current_method,
             redacted_uri: &self.current_redacted_uri,
@@ -407,7 +387,7 @@ impl RequestExecutionState {
         response_headers: &HeaderMap,
     ) -> Result<Option<RedirectAction>, Error> {
         next_redirect_action(RedirectInput {
-            redirect_policy: self.redirect_policy,
+            redirect_policy: self.options.redirect_policy,
             redirect_count: self.redirect_count,
             status,
             current_method: &self.current_method,
@@ -423,93 +403,26 @@ impl RequestExecutionState {
         redirect_action: RedirectAction,
         retry_eligibility: &dyn RetryEligibility,
     ) -> bool {
-        let drops_body = apply_redirect_transition(
-            RedirectTransitionInput {
-                retry_eligibility,
-                retry_policy: &self.retry_policy,
-                max_attempts: &mut self.max_attempts,
-                body_replayable: self.body_replayable,
-                current_headers: &mut self.current_headers,
-                current_method: &mut self.current_method,
-                current_uri: &mut self.current_uri,
-                current_redacted_uri: &mut self.current_redacted_uri,
-                redirect_count: &mut self.redirect_count,
-            },
-            redirect_action,
+        let drops_body = redirect_action.drops_body;
+        sanitize_headers_for_redirect(
+            &mut self.current_headers,
+            drops_body,
+            redirect_action.same_origin_redirect,
         );
+        self.current_method = redirect_action.next_method;
+        self.current_uri = redirect_action.next_uri;
+        self.current_redacted_uri = redirect_action.next_redacted_uri;
+        self.redirect_count = self.redirect_count.saturating_add(1);
         if drops_body {
             self.body_replayable = true;
         }
+        if self.max_attempts == 1
+            && self.body_replayable
+            && retry_eligibility.supports_retry(&self.current_method, &self.current_headers)
+        {
+            self.max_attempts = self.options.retry_policy.configured_max_attempts();
+        }
         drops_body
-    }
-}
-
-#[derive(Default)]
-pub(crate) struct ResponseProgress {
-    ran_response_interceptors: bool,
-    observed_server_throttle: bool,
-    evaluated_status_retry: bool,
-}
-
-impl ResponseProgress {
-    fn mark_response_interceptors_ran(&mut self) {
-        self.ran_response_interceptors = true;
-    }
-
-    fn mark_server_throttle_observed(&mut self) {
-        self.observed_server_throttle = true;
-    }
-
-    fn mark_status_retry_evaluated(&mut self) {
-        self.evaluated_status_retry = true;
-    }
-
-    const fn needs_response_interceptors(&self) -> bool {
-        !self.ran_response_interceptors
-    }
-
-    const fn needs_server_throttle_observation(&self) -> bool {
-        !self.observed_server_throttle
-    }
-
-    const fn needs_status_retry_evaluation(&self) -> bool {
-        !self.evaluated_status_retry
-    }
-
-    pub(crate) fn run_response_interceptors_if_needed(&mut self, run: impl FnOnce()) {
-        if self.needs_response_interceptors() {
-            run();
-            self.mark_response_interceptors_ran();
-        }
-    }
-
-    fn observe_server_throttle_if_needed(&mut self, observe: impl FnOnce()) {
-        if self.needs_server_throttle_observation() {
-            observe();
-            self.mark_server_throttle_observed();
-        }
-    }
-
-    fn try_status_retry_if_needed(
-        &mut self,
-        retry: impl FnOnce() -> Result<RetrySchedule, Error>,
-    ) -> Result<RetrySchedule, Error> {
-        if self.needs_status_retry_evaluation() {
-            self.mark_status_retry_evaluated();
-            return retry();
-        }
-        Ok(RetrySchedule::NotScheduled)
-    }
-
-    pub(crate) fn prepare_non_success_before_body(
-        &mut self,
-        run_response_interceptors: impl FnOnce(),
-        observe_server_throttle: impl FnOnce(),
-        try_status_retry: impl FnOnce() -> Result<RetrySchedule, Error>,
-    ) -> Result<RetrySchedule, Error> {
-        self.run_response_interceptors_if_needed(run_response_interceptors);
-        self.observe_server_throttle_if_needed(observe_server_throttle);
-        self.try_status_retry_if_needed(try_status_retry)
     }
 }
 
@@ -533,27 +446,30 @@ pub(crate) struct RedirectInput<'a> {
     pub(crate) body_replayable: bool,
 }
 
-pub(crate) struct RedirectTransitionInput<'a> {
-    pub(crate) retry_eligibility: &'a dyn RetryEligibility,
-    pub(crate) retry_policy: &'a RetryPolicy,
-    pub(crate) max_attempts: &'a mut usize,
-    pub(crate) body_replayable: bool,
-    pub(crate) current_headers: &'a mut HeaderMap,
-    pub(crate) current_method: &'a mut Method,
-    pub(crate) current_uri: &'a mut Uri,
-    pub(crate) current_redacted_uri: &'a mut String,
-    pub(crate) redirect_count: &'a mut usize,
-}
-
-pub(crate) fn select_base_url(
-    endpoint_selector: &dyn EndpointSelector,
+pub(crate) fn select_base_url<'a>(
+    endpoint_selector: Option<&'a dyn EndpointSelector>,
     method: &Method,
     path: &str,
-    configured_base_url: &str,
-) -> crate::Result<String> {
-    let selected = endpoint_selector.select_base_url(method, path, configured_base_url)?;
+    configured_base_url: &'a str,
+) -> crate::Result<Cow<'a, str>> {
+    let Some(selector) = endpoint_selector else {
+        // The immutable client URL was validated during construction.
+        return Ok(Cow::Borrowed(configured_base_url));
+    };
+    let selected = selector.select_base_url(method, path, configured_base_url)?;
     validate_base_url(&selected)?;
     Ok(selected)
+}
+
+fn retry_backoff(
+    policy: &RetryPolicy,
+    source: Option<&dyn BackoffSource>,
+    attempt: usize,
+) -> Duration {
+    match source {
+        Some(source) => source.backoff_for_retry(policy, attempt),
+        None => policy.backoff_for_retry(attempt),
+    }
 }
 
 pub(crate) fn status_retry_decision(
@@ -665,33 +581,18 @@ pub(crate) fn transport_timeout_error(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct RequestCompletion {
-    attempt_disposition: AttemptDisposition,
-    retry_budget_disposition: RetryBudgetDisposition,
+pub(crate) enum RequestCompletion {
+    Success,
+    Failure,
 }
 
 impl RequestCompletion {
-    pub(crate) const fn success() -> Self {
-        Self {
-            attempt_disposition: AttemptDisposition::Success,
-            retry_budget_disposition: RetryBudgetDisposition::RecordSuccess,
-        }
-    }
-
     pub(crate) fn from_response_status(retry_policy: &RetryPolicy, status: StatusCode) -> Self {
         if retry_policy.is_retryable_status(status) {
-            return Self {
-                attempt_disposition: AttemptDisposition::Failure,
-                retry_budget_disposition: RetryBudgetDisposition::Skip,
-            };
+            return Self::Failure;
         }
 
-        Self::success()
-    }
-
-    #[cfg(test)]
-    const fn retry_budget_disposition(self) -> RetryBudgetDisposition {
-        self.retry_budget_disposition
+        Self::Success
     }
 
     pub(crate) fn record_attempt<C, A>(self, attempts: &mut AttemptGuards<C, A>)
@@ -699,7 +600,10 @@ impl RequestCompletion {
         C: AttemptOutcome,
         A: AttemptOutcome,
     {
-        self.attempt_disposition.apply(attempts);
+        match self {
+            Self::Success => attempts.mark_success(),
+            Self::Failure => attempts.mark_failure(),
+        }
     }
 
     #[cfg(any(feature = "_async", feature = "_blocking"))]
@@ -712,7 +616,11 @@ impl RequestCompletion {
         A: AttemptOutcome,
     {
         self.record_attempt(attempts);
-        self.retry_budget_disposition.apply_to_budget(retry_budget);
+        if matches!(self, Self::Success)
+            && let Some(retry_budget) = retry_budget
+        {
+            retry_budget.record_success();
+        }
     }
 
     #[cfg(any(feature = "_async", feature = "_blocking"))]
@@ -720,46 +628,31 @@ impl RequestCompletion {
         self,
         attempts: &mut AttemptGuards<C, A>,
         retry_budget: Option<Arc<RetryBudget>>,
-    ) -> Option<StreamLifecycle>
+    ) -> StreamLifecycle
     where
         C: AttemptOutcome + Send + 'static,
         A: AttemptOutcome + Send + 'static,
     {
-        if matches!(self.attempt_disposition, AttemptDisposition::Failure) {
-            self.attempt_disposition.apply(attempts);
+        if matches!(self, Self::Failure) {
+            attempts.mark_failure();
+            return StreamLifecycle::default();
         }
-        stream_lifecycle_from_parts(
+
+        if retry_budget.is_none() && attempts.is_empty() {
+            return StreamLifecycle::default();
+        }
+
+        StreamLifecycle::new(Box::new(StreamResilienceHooks {
             retry_budget,
-            self.retry_budget_disposition,
-            self.attempt_disposition,
-            attempts.take(),
-        )
+            attempts: attempts.take(),
+        }))
     }
 }
 
 #[cfg(any(feature = "_async", feature = "_blocking"))]
-pub(crate) struct StreamResilienceHooks<C, A> {
+struct StreamResilienceHooks<C, A> {
     retry_budget: Option<Arc<RetryBudget>>,
-    retry_budget_disposition: RetryBudgetDisposition,
-    attempt_on_success: AttemptDisposition,
     attempts: AttemptGuards<C, A>,
-}
-
-#[cfg(any(feature = "_async", feature = "_blocking"))]
-impl<C, A> StreamResilienceHooks<C, A> {
-    pub(crate) const fn new(
-        retry_budget: Option<Arc<RetryBudget>>,
-        retry_budget_disposition: RetryBudgetDisposition,
-        attempt_on_success: AttemptDisposition,
-        attempts: AttemptGuards<C, A>,
-    ) -> Self {
-        Self {
-            retry_budget,
-            retry_budget_disposition,
-            attempt_on_success,
-            attempts,
-        }
-    }
 }
 
 #[cfg(any(feature = "_async", feature = "_blocking"))]
@@ -769,10 +662,10 @@ where
     A: AttemptOutcome,
 {
     fn complete_success(&mut self) {
-        self.retry_budget_disposition
-            .apply_to_budget(self.retry_budget.as_ref());
-        self.retry_budget = None;
-        self.attempt_on_success.apply(&mut self.attempts);
+        if let Some(retry_budget) = self.retry_budget.take() {
+            retry_budget.record_success();
+        }
+        self.attempts.mark_success();
     }
 
     fn complete_error(&mut self, _error: &Error) {
@@ -784,36 +677,6 @@ where
         self.retry_budget = None;
         self.attempts.cancel();
     }
-}
-
-#[cfg(any(feature = "_async", feature = "_blocking"))]
-fn stream_lifecycle_from_parts<C, A>(
-    retry_budget: Option<Arc<RetryBudget>>,
-    retry_budget_disposition: RetryBudgetDisposition,
-    attempt_on_success: AttemptDisposition,
-    attempts: AttemptGuards<C, A>,
-) -> Option<StreamLifecycle>
-where
-    C: AttemptOutcome + Send + 'static,
-    A: AttemptOutcome + Send + 'static,
-{
-    let has_retry_budget_hook = retry_budget.is_some()
-        && matches!(
-            retry_budget_disposition,
-            RetryBudgetDisposition::RecordSuccess
-        );
-    if !has_retry_budget_hook && attempts.is_empty() {
-        return None;
-    }
-
-    Some(StreamLifecycle::new(Some(Box::new(
-        StreamResilienceHooks::new(
-            retry_budget,
-            retry_budget_disposition,
-            attempt_on_success,
-            attempts,
-        ),
-    ))))
 }
 
 pub(crate) struct TerminalNonSuccess {
@@ -880,7 +743,6 @@ pub(crate) struct RetryPlan {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AttemptDisposition {
-    Success,
     Failure,
     Cancel,
 }
@@ -892,26 +754,8 @@ impl AttemptDisposition {
         A: AttemptOutcome,
     {
         match self {
-            Self::Success => attempts.mark_success(),
             Self::Failure => attempts.mark_failure(),
             Self::Cancel => attempts.cancel(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RetryBudgetDisposition {
-    RecordSuccess,
-    Skip,
-}
-
-impl RetryBudgetDisposition {
-    #[cfg(any(feature = "_async", feature = "_blocking"))]
-    pub(crate) fn apply_to_budget(self, retry_budget: Option<&Arc<RetryBudget>>) {
-        if matches!(self, Self::RecordSuccess)
-            && let Some(retry_budget) = retry_budget
-        {
-            retry_budget.record_success();
         }
     }
 }
@@ -955,20 +799,18 @@ impl RetryAttemptState<'_> {
             max_attempts,
         } = self;
 
-        prepare_retry_schedule(
-            RetryScheduleInput {
-                retry_policy,
-                retry_decision,
-                requested_delay,
-                attempt,
-                max_attempts,
-                total_timeout,
-                request_started_at,
-                method,
-                redacted_uri,
-            },
-            || consume_retry_budget(method, redacted_uri),
-        )
+        if *attempt >= max_attempts || !retry_policy.should_retry_decision(retry_decision) {
+            return Ok(RetrySchedule::NotScheduled);
+        }
+
+        let Some(delay) = bounded_retry_delay(requested_delay, total_timeout, request_started_at)
+        else {
+            return Err(deadline_exceeded_error(total_timeout, method, redacted_uri));
+        };
+
+        consume_retry_budget(method, redacted_uri)?;
+        *attempt += 1;
+        Ok(RetrySchedule::Scheduled { delay })
     }
 }
 
@@ -1041,7 +883,7 @@ impl<'a> BodyReadRetryContext<'a> {
     pub(crate) fn response_body_read_failure(
         &self,
         source: impl std::error::Error + Send + Sync + 'static,
-        backoff_source: &dyn BackoffSource,
+        backoff_source: Option<&dyn BackoffSource>,
     ) -> BodyReadFailure {
         BodyReadFailure::Retryable {
             error: Error::ReadBody {
@@ -1053,7 +895,7 @@ impl<'a> BodyReadRetryContext<'a> {
 
     pub(crate) fn response_body_timeout_failure(
         &self,
-        backoff_source: &dyn BackoffSource,
+        backoff_source: Option<&dyn BackoffSource>,
     ) -> BodyReadFailure {
         let error = if total_timeout_expired(self.total_timeout, self.request_started_at) {
             deadline_exceeded_error(self.total_timeout, self.method, self.redacted_uri)
@@ -1087,7 +929,10 @@ impl<'a> BodyReadRetryContext<'a> {
         }
     }
 
-    fn response_body_read_retry_plan(&self, backoff_source: &dyn BackoffSource) -> RetryPlan {
+    fn response_body_read_retry_plan(
+        &self,
+        backoff_source: Option<&dyn BackoffSource>,
+    ) -> RetryPlan {
         let attempt = *self.attempt;
         RetryPlan {
             decision: response_body_read_retry_decision(
@@ -1096,11 +941,14 @@ impl<'a> BodyReadRetryContext<'a> {
                 self.method,
                 self.redacted_uri,
             ),
-            delay: backoff_source.backoff_for_retry(self.retry_policy, attempt),
+            delay: retry_backoff(self.retry_policy, backoff_source, attempt),
         }
     }
 
-    fn response_body_timeout_retry_plan(&self, backoff_source: &dyn BackoffSource) -> RetryPlan {
+    fn response_body_timeout_retry_plan(
+        &self,
+        backoff_source: Option<&dyn BackoffSource>,
+    ) -> RetryPlan {
         let attempt = *self.attempt;
         RetryPlan {
             decision: timeout_retry_decision(
@@ -1110,7 +958,7 @@ impl<'a> BodyReadRetryContext<'a> {
                 self.redacted_uri,
                 TimeoutPhase::ResponseBody,
             ),
-            delay: backoff_source.backoff_for_retry(self.retry_policy, attempt),
+            delay: retry_backoff(self.retry_policy, backoff_source, attempt),
         }
     }
 }
@@ -1221,81 +1069,9 @@ pub(crate) enum RetrySchedule {
     Scheduled { delay: Duration },
 }
 
-pub(crate) struct RetryScheduleInput<'a> {
-    pub(crate) retry_policy: &'a RetryPolicy,
-    pub(crate) retry_decision: &'a RetryDecision,
-    pub(crate) requested_delay: Duration,
-    pub(crate) attempt: &'a mut usize,
-    pub(crate) max_attempts: usize,
-    pub(crate) total_timeout: Option<Duration>,
-    pub(crate) request_started_at: Instant,
-    pub(crate) method: &'a Method,
-    pub(crate) redacted_uri: &'a str,
-}
-
-pub(crate) fn prepare_retry_schedule(
-    input: RetryScheduleInput<'_>,
-    consume_retry_budget: impl FnOnce() -> Result<(), Error>,
-) -> Result<RetrySchedule, Error> {
-    let RetryScheduleInput {
-        retry_policy,
-        retry_decision,
-        requested_delay,
-        attempt,
-        max_attempts,
-        total_timeout,
-        request_started_at,
-        method,
-        redacted_uri,
-    } = input;
-
-    if *attempt >= max_attempts || !retry_policy.should_retry_decision(retry_decision) {
-        return Ok(RetrySchedule::NotScheduled);
-    }
-
-    let Some(delay) = bounded_retry_delay(requested_delay, total_timeout, request_started_at)
-    else {
-        return Err(deadline_exceeded_error(total_timeout, method, redacted_uri));
-    };
-
-    consume_retry_budget()?;
-    *attempt += 1;
-    Ok(RetrySchedule::Scheduled { delay })
-}
-
 pub(crate) struct StreamTiming {
     pub(crate) total_timeout_ms: Option<u128>,
     pub(crate) deadline_at: Option<Instant>,
-}
-
-pub(crate) struct StatusRetryPlanInput<'a> {
-    pub(crate) attempt: usize,
-    pub(crate) max_attempts: usize,
-    pub(crate) method: &'a Method,
-    pub(crate) redacted_uri: &'a str,
-    pub(crate) status: StatusCode,
-    pub(crate) headers: &'a HeaderMap,
-    pub(crate) clock: &'a dyn Clock,
-    pub(crate) fallback_delay: Duration,
-    pub(crate) max_delay: Duration,
-}
-
-pub(crate) fn status_retry_plan(input: StatusRetryPlanInput<'_>) -> RetryPlan {
-    let StatusRetryPlanInput {
-        attempt,
-        max_attempts,
-        method,
-        redacted_uri,
-        status,
-        headers,
-        clock,
-        fallback_delay,
-        max_delay,
-    } = input;
-    RetryPlan {
-        decision: status_retry_decision(attempt, max_attempts, method, redacted_uri, status),
-        delay: status_retry_delay(clock, headers, fallback_delay, max_delay),
-    }
 }
 
 pub(crate) fn stream_timing(
@@ -1389,40 +1165,6 @@ fn redirect_drops_body(current_method: &Method, status: StatusCode) -> bool {
             && *current_method == Method::POST)
 }
 
-pub(crate) fn apply_redirect_transition(
-    input: RedirectTransitionInput<'_>,
-    redirect_action: RedirectAction,
-) -> bool {
-    let RedirectTransitionInput {
-        retry_eligibility,
-        retry_policy,
-        max_attempts,
-        body_replayable,
-        current_headers,
-        current_method,
-        current_uri,
-        current_redacted_uri,
-        redirect_count,
-    } = input;
-    sanitize_headers_for_redirect(
-        current_headers,
-        redirect_action.drops_body,
-        redirect_action.same_origin_redirect,
-    );
-    let drops_body = redirect_action.drops_body;
-    *current_method = redirect_action.next_method;
-    *current_uri = redirect_action.next_uri;
-    *current_redacted_uri = redirect_action.next_redacted_uri;
-    *redirect_count = redirect_count.saturating_add(1);
-    if *max_attempts == 1
-        && (body_replayable || drops_body)
-        && retry_eligibility.supports_retry(current_method, current_headers)
-    {
-        *max_attempts = retry_policy.configured_max_attempts();
-    }
-    drops_body
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1434,16 +1176,15 @@ mod tests {
 
     use super::{
         AttemptDisposition, BodyReadFailure, RedirectAction, RedirectInput,
-        RequestExecutionPreparation, RequestExecutionState, RequestExecutionStateInput,
-        ResponseProgress, RetryBudgetDisposition, RetrySchedule, RetryScheduleInput,
-        TransportFailurePlan, next_redirect_action, prepare_retry_request_input,
-        prepare_retry_schedule, server_throttle_delay, status_retry_delay,
-        transport_retry_decision,
+        RequestExecutionPreparation, RequestExecutionState, RetryAttemptState, RetryRequestInput,
+        RetrySchedule, TransportFailurePlan, next_redirect_action, prepare_retry_request_input,
+        server_throttle_delay, status_retry_delay, transport_retry_decision,
     };
     use crate::core::error::{Error, TransportErrorKind, transport_error};
-    use crate::core::extensions::{BackoffSource, PrimaryEndpointSelector, SystemClock};
+    use crate::core::extensions::{BackoffSource, SystemClock};
     use crate::core::policy::{RedirectPolicy, StatusPolicy};
-    use crate::core::request_builder::{RequestExecutionDefaults, RequestExecutionOptions};
+    use crate::core::request_body::RequestBody;
+    use crate::core::request_builder::{RequestExecutionOptions, RequestExecutionOverrides};
     use crate::core::retry::{PermissiveRetryEligibility, RetryPolicy, RetryReason};
 
     struct TestAttempt {
@@ -1491,8 +1232,8 @@ mod tests {
         }
     }
 
-    fn empty_execution_options() -> RequestExecutionOptions {
-        RequestExecutionOptions {
+    fn empty_execution_options() -> RequestExecutionOverrides {
+        RequestExecutionOverrides {
             request_timeout: None,
             total_timeout: None,
             retry_policy: None,
@@ -1503,18 +1244,14 @@ mod tests {
         }
     }
 
-    fn execution_defaults<'a>(
-        retry_policy: &'a RetryPolicy,
-        auto_accept_encoding: bool,
-    ) -> RequestExecutionDefaults<'a> {
-        RequestExecutionDefaults {
+    fn execution_defaults(retry_policy: &RetryPolicy) -> RequestExecutionOptions {
+        RequestExecutionOptions {
             request_timeout: Duration::from_secs(5),
             total_timeout: Some(Duration::from_secs(20)),
-            retry_policy,
+            retry_policy: Arc::new(retry_policy.clone()),
             max_response_body_bytes: 4096,
             redirect_policy: RedirectPolicy::limited(2),
             status_policy: StatusPolicy::Error,
-            auto_accept_encoding,
         }
     }
 
@@ -1537,24 +1274,18 @@ mod tests {
             HeaderValue::from_static("1"),
         );
 
-        let prepared = prepare_retry_request_input(
-            RequestExecutionPreparation {
-                endpoint_selector: &PrimaryEndpointSelector,
-                configured_base_url: "https://api.example.com/v1",
-                method: http::Method::GET,
-                path: "items?q=secret".to_owned(),
-                default_headers: &default_headers,
-                headers: request_headers,
-                body: None::<&'static str>,
-                execution_options: empty_execution_options(),
-                defaults: execution_defaults(&retry_policy, true),
-            },
-            || "empty",
-            |method, headers| {
-                assert_eq!(method, http::Method::GET);
-                headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("test-encoding"));
-            },
-        )
+        let prepared = prepare_retry_request_input(RequestExecutionPreparation {
+            endpoint_selector: None,
+            configured_base_url: "https://api.example.com/v1",
+            method: http::Method::GET,
+            path: "items?q=secret".to_owned(),
+            default_headers: &default_headers,
+            headers: request_headers,
+            body: None::<&'static str>,
+            execution_options: empty_execution_options(),
+            defaults: &execution_defaults(&retry_policy),
+            default_auto_accept_encoding: true,
+        })
         .expect("request preparation should succeed");
 
         assert_eq!(prepared.method, http::Method::GET);
@@ -1566,7 +1297,7 @@ mod tests {
             prepared.redacted_uri_text,
             "https://api.example.com/v1/items"
         );
-        assert_eq!(prepared.body, "empty");
+        assert_eq!(prepared.body, "");
         assert_eq!(
             prepared.merged_headers.get(USER_AGENT),
             Some(&HeaderValue::from_static("reqx-test"))
@@ -1580,8 +1311,12 @@ mod tests {
             Some(&HeaderValue::from_static("1"))
         );
         assert_eq!(
-            prepared.merged_headers.get(ACCEPT_ENCODING),
-            Some(&HeaderValue::from_static("test-encoding"))
+            prepared.merged_headers.contains_key(ACCEPT_ENCODING),
+            cfg!(any(
+                feature = "compression-gzip",
+                feature = "compression-brotli",
+                feature = "compression-zstd"
+            )),
         );
         assert_eq!(
             prepared.execution_options.request_timeout,
@@ -1598,21 +1333,18 @@ mod tests {
     fn prepare_retry_request_input_preserves_body_and_skips_auto_encoding_when_disabled() {
         let retry_policy = RetryPolicy::disabled();
 
-        let prepared = prepare_retry_request_input(
-            RequestExecutionPreparation {
-                endpoint_selector: &PrimaryEndpointSelector,
-                configured_base_url: "https://api.example.com",
-                method: http::Method::POST,
-                path: "/v1/items".to_owned(),
-                default_headers: &HeaderMap::new(),
-                headers: HeaderMap::new(),
-                body: Some("request-body"),
-                execution_options: empty_execution_options(),
-                defaults: execution_defaults(&retry_policy, false),
-            },
-            || "empty",
-            |_method, _headers| panic!("auto accept-encoding should be disabled"),
-        )
+        let prepared = prepare_retry_request_input(RequestExecutionPreparation {
+            endpoint_selector: None,
+            configured_base_url: "https://api.example.com",
+            method: http::Method::POST,
+            path: "/v1/items".to_owned(),
+            default_headers: &HeaderMap::new(),
+            headers: HeaderMap::new(),
+            body: Some("request-body"),
+            execution_options: empty_execution_options(),
+            defaults: &execution_defaults(&retry_policy),
+            default_auto_accept_encoding: false,
+        })
         .expect("request preparation should succeed");
 
         assert_eq!(prepared.body, "request-body");
@@ -1625,21 +1357,18 @@ mod tests {
         let mut default_headers = HeaderMap::new();
         default_headers.insert(CONTENT_LENGTH, HeaderValue::from_static("1"));
 
-        let prepared = prepare_retry_request_input(
-            RequestExecutionPreparation {
-                endpoint_selector: &PrimaryEndpointSelector,
-                configured_base_url: "https://api.example.com",
-                method: http::Method::POST,
-                path: "/v1/items".to_owned(),
-                default_headers: &default_headers,
-                headers: HeaderMap::new(),
-                body: Some("request-body"),
-                execution_options: empty_execution_options(),
-                defaults: execution_defaults(&retry_policy, false),
-            },
-            || "empty",
-            |_method, _headers| panic!("auto accept-encoding should be disabled"),
-        )
+        let prepared = prepare_retry_request_input(RequestExecutionPreparation {
+            endpoint_selector: None,
+            configured_base_url: "https://api.example.com",
+            method: http::Method::POST,
+            path: "/v1/items".to_owned(),
+            default_headers: &default_headers,
+            headers: HeaderMap::new(),
+            body: Some("request-body"),
+            execution_options: empty_execution_options(),
+            defaults: &execution_defaults(&retry_policy),
+            default_auto_accept_encoding: false,
+        })
         .expect("request preparation should succeed");
 
         assert!(!prepared.merged_headers.contains_key(CONTENT_LENGTH));
@@ -1653,21 +1382,18 @@ mod tests {
         let mut request_headers = HeaderMap::new();
         request_headers.insert(CONTENT_LENGTH, HeaderValue::from_static("12"));
 
-        let prepared = prepare_retry_request_input(
-            RequestExecutionPreparation {
-                endpoint_selector: &PrimaryEndpointSelector,
-                configured_base_url: "https://api.example.com",
-                method: http::Method::POST,
-                path: "/v1/items".to_owned(),
-                default_headers: &default_headers,
-                headers: request_headers,
-                body: Some("request-body"),
-                execution_options: empty_execution_options(),
-                defaults: execution_defaults(&retry_policy, false),
-            },
-            || "empty",
-            |_method, _headers| panic!("auto accept-encoding should be disabled"),
-        )
+        let prepared = prepare_retry_request_input(RequestExecutionPreparation {
+            endpoint_selector: None,
+            configured_base_url: "https://api.example.com",
+            method: http::Method::POST,
+            path: "/v1/items".to_owned(),
+            default_headers: &default_headers,
+            headers: request_headers,
+            body: Some("request-body"),
+            execution_options: empty_execution_options(),
+            defaults: &execution_defaults(&retry_policy),
+            default_auto_accept_encoding: false,
+        })
         .expect("request preparation should succeed");
 
         assert_eq!(
@@ -1684,23 +1410,31 @@ mod tests {
         let uri = "http://example.com/old"
             .parse()
             .expect("request URI should parse");
-        RequestExecutionState::new(
-            RequestExecutionStateInput {
+        let body = if body_replayable {
+            RequestBody::default()
+        } else {
+            RequestBody::Streaming(())
+        };
+        let (state, _) = RequestExecutionState::from_request(
+            RetryRequestInput {
                 method,
                 uri,
                 redacted_uri_text: "http://example.com/old".to_owned(),
                 merged_headers: HeaderMap::new(),
-                body_replayable,
-                retry_policy,
-                redirect_policy: RedirectPolicy::limited(3),
-                status_policy: StatusPolicy::error(),
-                timeout_value: Duration::from_millis(250),
-                total_timeout: Some(Duration::from_secs(5)),
-                max_response_body_bytes: 1024,
-                request_started_at: Instant::now(),
+                body,
+                execution_options: RequestExecutionOptions {
+                    retry_policy: Arc::new(retry_policy),
+                    redirect_policy: RedirectPolicy::limited(3),
+                    status_policy: StatusPolicy::Error,
+                    request_timeout: Duration::from_millis(250),
+                    total_timeout: Some(Duration::from_secs(5)),
+                    max_response_body_bytes: 1024,
+                },
             },
+            Instant::now(),
             &PermissiveRetryEligibility,
-        )
+        );
+        state
     }
 
     #[test]
@@ -1912,7 +1646,7 @@ mod tests {
 
         let failure = retry_context.response_body_read_failure(
             std::io::Error::other("read failed"),
-            &FixedBackoffSource(Duration::from_millis(17)),
+            Some(&FixedBackoffSource(Duration::from_millis(17))),
         );
         let BodyReadFailure::Retryable { error, retry_plan } = failure else {
             panic!("read body failures should produce a retry plan");
@@ -1936,7 +1670,7 @@ mod tests {
         let retry_context = state.body_read_retry_context(&context, Duration::from_millis(75));
 
         let failure = retry_context
-            .response_body_timeout_failure(&FixedBackoffSource(Duration::from_millis(17)));
+            .response_body_timeout_failure(Some(&FixedBackoffSource(Duration::from_millis(17))));
         let BodyReadFailure::Terminal { error } = failure else {
             panic!("expired total deadlines must not schedule another body timeout retry");
         };
@@ -1955,8 +1689,8 @@ mod tests {
             std::io::Error::other("connect failed"),
         );
 
-        let TransportFailurePlan::Retry(retry_plan) =
-            state.transport_failure_plan(&error, &FixedBackoffSource(Duration::from_millis(42)))
+        let TransportFailurePlan::Retry(retry_plan) = state
+            .transport_failure_plan(&error, Some(&FixedBackoffSource(Duration::from_millis(42))))
         else {
             panic!("transport errors should produce a retry plan");
         };
@@ -1980,7 +1714,8 @@ mod tests {
 
         let TransportFailurePlan::Terminal {
             attempt_disposition,
-        } = state.transport_failure_plan(&error, &FixedBackoffSource(Duration::from_millis(42)))
+        } = state
+            .transport_failure_plan(&error, Some(&FixedBackoffSource(Duration::from_millis(42))))
         else {
             panic!("deadline errors should not produce transport retry plans");
         };
@@ -1998,97 +1733,13 @@ mod tests {
 
         let TransportFailurePlan::Terminal {
             attempt_disposition,
-        } = state.transport_failure_plan(&error, &FixedBackoffSource(Duration::from_millis(42)))
+        } = state
+            .transport_failure_plan(&error, Some(&FixedBackoffSource(Duration::from_millis(42))))
         else {
             panic!("local non-transport errors should not produce transport retry plans");
         };
 
         assert_eq!(attempt_disposition, AttemptDisposition::Cancel);
-    }
-
-    #[test]
-    fn response_progress_helpers_run_each_stage_once() {
-        let mut progress = ResponseProgress::default();
-        let mut response_interceptors = 0;
-        let mut throttle_observations = 0;
-        let mut status_retries = 0;
-
-        progress.run_response_interceptors_if_needed(|| response_interceptors += 1);
-        progress.run_response_interceptors_if_needed(|| response_interceptors += 1);
-        progress.observe_server_throttle_if_needed(|| throttle_observations += 1);
-        progress.observe_server_throttle_if_needed(|| throttle_observations += 1);
-
-        let first_retry = progress
-            .try_status_retry_if_needed(|| {
-                status_retries += 1;
-                Ok(RetrySchedule::Scheduled {
-                    delay: Duration::from_millis(10),
-                })
-            })
-            .expect("status retry check should succeed");
-        let second_retry = progress
-            .try_status_retry_if_needed(|| {
-                status_retries += 1;
-                Ok(RetrySchedule::Scheduled {
-                    delay: Duration::from_millis(20),
-                })
-            })
-            .expect("status retry check should stay idempotent");
-
-        assert_eq!(response_interceptors, 1);
-        assert_eq!(throttle_observations, 1);
-        assert_eq!(status_retries, 1);
-        assert_eq!(
-            first_retry,
-            RetrySchedule::Scheduled {
-                delay: Duration::from_millis(10)
-            }
-        );
-        assert_eq!(second_retry, RetrySchedule::NotScheduled);
-    }
-
-    #[test]
-    fn response_progress_pre_body_helper_runs_each_stage_once() {
-        let mut progress = ResponseProgress::default();
-        let mut response_interceptors = 0;
-        let mut throttle_observations = 0;
-        let mut status_retries = 0;
-
-        let first_retry = progress
-            .prepare_non_success_before_body(
-                || response_interceptors += 1,
-                || throttle_observations += 1,
-                || {
-                    status_retries += 1;
-                    Ok(RetrySchedule::Scheduled {
-                        delay: Duration::from_millis(10),
-                    })
-                },
-            )
-            .expect("pre-body status handling should succeed");
-        let second_retry = progress
-            .prepare_non_success_before_body(
-                || response_interceptors += 1,
-                || throttle_observations += 1,
-                || {
-                    status_retries += 1;
-                    Ok(RetrySchedule::Scheduled {
-                        delay: Duration::from_millis(20),
-                    })
-                },
-            )
-            .expect("pre-body status handling should remain idempotent");
-
-        assert_eq!(response_interceptors, 1);
-        assert_eq!(throttle_observations, 1);
-        assert_eq!(status_retries, 1);
-        assert_eq!(
-            first_retry,
-            RetrySchedule::Scheduled {
-                delay: Duration::from_millis(10)
-            }
-        );
-        assert_eq!(second_retry, RetrySchedule::NotScheduled);
     }
 
     #[test]
@@ -2105,10 +1756,6 @@ mod tests {
 
         completion.record_attempt(&mut attempts);
 
-        assert_eq!(
-            completion.retry_budget_disposition(),
-            RetryBudgetDisposition::RecordSuccess
-        );
         assert_eq!(
             *events.lock().expect("lock events"),
             vec!["circuit:success".to_owned(), "adaptive:success".to_owned()]
@@ -2130,11 +1777,7 @@ mod tests {
 
         let lifecycle = completion.into_stream_lifecycle(&mut attempts, None);
 
-        assert_eq!(
-            completion.retry_budget_disposition(),
-            RetryBudgetDisposition::Skip
-        );
-        assert!(lifecycle.is_none());
+        drop(lifecycle);
         assert!(attempts.is_empty());
         assert_eq!(
             *events.lock().expect("lock events"),
@@ -2144,20 +1787,78 @@ mod tests {
 
     #[cfg(any(feature = "_async", feature = "_blocking"))]
     #[test]
-    fn stream_lifecycle_skips_inert_resilience_hooks() {
-        let retry_budget = Arc::new(crate::resilience::RetryBudget::new(
-            crate::resilience::RetryBudgetPolicy::standard(),
-            Arc::new(SystemClock),
-        ));
-        let mut attempts: super::AttemptGuards<TestAttempt, TestAttempt> =
-            super::AttemptGuards::new(None, None);
-        let completion = super::RequestCompletion::from_response_status(
-            &RetryPolicy::standard(),
-            http::StatusCode::SERVICE_UNAVAILABLE,
-        );
-        let lifecycle = completion.into_stream_lifecycle(&mut attempts, Some(retry_budget));
+    fn stream_completion_records_one_outcome_and_credits_only_completed_successes() {
+        use crate::core::metrics::ClientMetrics;
+        use crate::core::otel::OtelTelemetry;
+        use crate::resilience::{RetryBudget, RetryBudgetPolicy};
 
-        assert!(lifecycle.is_none());
+        for status in [
+            http::StatusCode::OK,
+            http::StatusCode::NOT_FOUND,
+            http::StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            for outcome in ["success", "failure", "cancel"] {
+                let events = Arc::new(Mutex::new(Vec::new()));
+                let mut attempts = super::AttemptGuards::new(
+                    Some(TestAttempt::new("circuit", &events)),
+                    Some(TestAttempt::new("adaptive", &events)),
+                );
+                let budget = Arc::new(RetryBudget::new(
+                    RetryBudgetPolicy::standard()
+                        .retry_ratio(1.0)
+                        .min_retries_per_window(0),
+                    Arc::new(SystemClock),
+                ));
+                let metrics = ClientMetrics::with_options(true, OtelTelemetry::disabled());
+                metrics.record_request_started();
+                let mut lifecycle = super::RequestCompletion::from_response_status(
+                    &RetryPolicy::standard(),
+                    status,
+                )
+                .into_stream_lifecycle(&mut attempts, Some(Arc::clone(&budget)));
+                lifecycle.attach_completion(metrics.stream_completion(
+                    None,
+                    Instant::now(),
+                    status.as_u16(),
+                    metrics.enter_in_flight(),
+                ));
+
+                assert!(attempts.is_empty());
+                assert!(!budget.try_consume_retry());
+                assert_eq!(metrics.snapshot().requests.in_flight, 1);
+                let stream = &mut lifecycle;
+                match outcome {
+                    "success" => stream.complete_success(),
+                    "failure" => stream.complete_error(&Error::InvalidUri {
+                        uri: "invalid".to_owned(),
+                    }),
+                    _ => stream.complete_canceled(),
+                }
+                stream.complete_success();
+                drop(lifecycle);
+
+                let snapshot = metrics.snapshot();
+                assert_eq!(snapshot.requests.succeeded, u64::from(outcome == "success"));
+                assert_eq!(snapshot.requests.failed, u64::from(outcome == "failure"));
+                assert_eq!(snapshot.requests.canceled, u64::from(outcome == "cancel"));
+                assert_eq!(snapshot.requests.in_flight, 0);
+                assert_eq!(snapshot.latency.samples, 1);
+                let retryable_status = status == http::StatusCode::SERVICE_UNAVAILABLE;
+                assert_eq!(
+                    budget.try_consume_retry(),
+                    !retryable_status && outcome == "success"
+                );
+                assert!(!budget.try_consume_retry());
+                let attempt_outcome = if retryable_status { "failure" } else { outcome };
+                assert_eq!(
+                    *events.lock().expect("lock events"),
+                    vec![
+                        format!("circuit:{attempt_outcome}"),
+                        format!("adaptive:{attempt_outcome}"),
+                    ],
+                );
+            }
+        }
     }
 
     #[test]
@@ -2175,10 +1876,6 @@ mod tests {
         completion.record_attempt(&mut attempts);
 
         assert_eq!(
-            completion.retry_budget_disposition(),
-            RetryBudgetDisposition::Skip
-        );
-        assert_eq!(
             *events.lock().expect("lock events"),
             vec!["circuit:failure".to_owned(), "adaptive:failure".to_owned()]
         );
@@ -2195,23 +1892,19 @@ mod tests {
             transport_retry_decision(attempt, 3, &method, redacted_uri, TransportErrorKind::Dns);
         let budget_consumed = AtomicUsize::new(0);
 
-        let schedule = prepare_retry_schedule(
-            RetryScheduleInput {
-                retry_policy: &retry_policy,
-                retry_decision: &retry_decision,
-                requested_delay: Duration::from_millis(10),
-                attempt: &mut attempt,
-                max_attempts: 3,
-                total_timeout: Some(Duration::from_secs(1)),
-                request_started_at: Instant::now(),
-                method: &method,
-                redacted_uri,
-            },
-            || {
-                budget_consumed.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            },
-        )
+        let schedule = RetryAttemptState {
+            retry_policy: &retry_policy,
+            attempt: &mut attempt,
+            max_attempts: 3,
+            total_timeout: Some(Duration::from_secs(1)),
+            request_started_at: Instant::now(),
+            method: &method,
+            redacted_uri,
+        }
+        .prepare_retry_schedule(&retry_decision, Duration::from_millis(10), |_, _| {
+            budget_consumed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
         .expect("schedule should not fail");
 
         assert!(matches!(schedule, RetrySchedule::NotScheduled));
@@ -2236,23 +1929,19 @@ mod tests {
         );
         let budget_consumed = AtomicUsize::new(0);
 
-        let schedule = prepare_retry_schedule(
-            RetryScheduleInput {
-                retry_policy: &retry_policy,
-                retry_decision: &retry_decision,
-                requested_delay: Duration::from_millis(10),
-                attempt: &mut attempt,
-                max_attempts: 3,
-                total_timeout: Some(Duration::from_secs(1)),
-                request_started_at: Instant::now(),
-                method: &method,
-                redacted_uri,
-            },
-            || {
-                budget_consumed.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            },
-        )
+        let schedule = RetryAttemptState {
+            retry_policy: &retry_policy,
+            attempt: &mut attempt,
+            max_attempts: 3,
+            total_timeout: Some(Duration::from_secs(1)),
+            request_started_at: Instant::now(),
+            method: &method,
+            redacted_uri,
+        }
+        .prepare_retry_schedule(&retry_decision, Duration::from_millis(10), |_, _| {
+            budget_consumed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
         .expect("schedule should succeed");
 
         assert!(matches!(
@@ -2285,23 +1974,19 @@ mod tests {
             .checked_sub(Duration::from_millis(20))
             .expect("test start time should be representable");
 
-        let error = match prepare_retry_schedule(
-            RetryScheduleInput {
-                retry_policy: &retry_policy,
-                retry_decision: &retry_decision,
-                requested_delay: Duration::from_millis(10),
-                attempt: &mut attempt,
-                max_attempts: 3,
-                total_timeout: Some(Duration::from_millis(5)),
-                request_started_at,
-                method: &method,
-                redacted_uri,
-            },
-            || {
-                budget_consumed.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            },
-        ) {
+        let error = match (RetryAttemptState {
+            retry_policy: &retry_policy,
+            attempt: &mut attempt,
+            max_attempts: 3,
+            total_timeout: Some(Duration::from_millis(5)),
+            request_started_at,
+            method: &method,
+            redacted_uri,
+        })
+        .prepare_retry_schedule(&retry_decision, Duration::from_millis(10), |_, _| {
+            budget_consumed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }) {
             Ok(_) => panic!("expired deadline should prevent retry scheduling"),
             Err(error) => error,
         };

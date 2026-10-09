@@ -11,7 +11,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::builder("https://api.example.com")
         .client_name("resilience-demo")
         .request_timeout(Duration::from_secs(3))
-        .total_timeout(Duration::from_secs(10))
+        .total_timeout(Some(Duration::from_secs(10)))
         .retry_policy(
             RetryPolicy::standard()
                 .max_attempts(5)
@@ -30,20 +30,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .transport_retry_window(TransportErrorKind::Dns, 2)
                 .response_body_read_retry_window(2),
         )
-        .retry_budget_policy(
+        .retry_budget_policy(Some(
             RetryBudgetPolicy::standard()
                 .window(Duration::from_secs(10))
                 .retry_ratio(0.2)
                 .min_retries_per_window(2),
-        )
-        .circuit_breaker_policy(
+        ))
+        .circuit_breaker_policy(Some(
             CircuitBreakerPolicy::standard()
                 .failure_threshold(5)
                 .open_timeout(Duration::from_secs(10))
                 .half_open_max_requests(2)
                 .half_open_success_threshold(2),
-        )
-        .adaptive_concurrency_policy(
+        ))
+        .adaptive_concurrency_policy(Some(
             AdaptiveConcurrencyPolicy::standard()
                 .min_limit(2)
                 .initial_limit(8)
@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .increase_step(1)
                 .decrease_ratio(0.8)
                 .high_latency_threshold(Duration::from_millis(250)),
-        )
+        ))
         .build()?;
 
     let response = client.get("/v1/health").send().await?;

@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 use std::future::Future;
 use std::time::Duration;
 
@@ -9,25 +9,37 @@ use thiserror::Error;
 
 use crate::core::util::{duration_millis_ceil, exponential_backoff_with_jitter};
 
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 mod asynchronous;
 mod blocking;
 mod session;
 #[cfg(test)]
 mod tests;
 
-#[cfg(feature = "_async")]
-pub use asynchronous::AsyncResumableUploader;
-pub use blocking::BlockingResumableUploader;
+/// Drives resumable uploads with shared chunking, retry, and verification settings.
+///
+/// Use `upload_blocking`/`resume_blocking` for synchronous backends and
+/// `upload_async`/`resume_async` for asynchronous backends.
+#[derive(Debug, Default)]
+pub struct ResumableUploader {
+    options: ResumableUploadOptions,
+}
+
+impl ResumableUploader {
+    /// Creates an uploader with the provided options.
+    pub fn new(options: ResumableUploadOptions) -> Self {
+        Self { options }
+    }
+
+    /// Returns this uploader's immutable configuration.
+    pub fn options(&self) -> &ResumableUploadOptions {
+        &self.options
+    }
+}
 
 /// Current resumable upload checkpoint schema version.
 pub const RESUMABLE_UPLOAD_CHECKPOINT_VERSION: u32 = 2;
-const LEGACY_RESUMABLE_UPLOAD_CHECKPOINT_VERSION: u32 = 1;
 const MAX_RESUMABLE_UPLOAD_PART_NUMBER: u32 = u32::MAX;
-
-fn legacy_checkpoint_version() -> u32 {
-    LEGACY_RESUMABLE_UPLOAD_CHECKPOINT_VERSION
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -116,8 +128,7 @@ impl UploadedPart {
 #[non_exhaustive]
 /// Serializable checkpoint used to resume multipart uploads.
 pub struct ResumableUploadCheckpoint {
-    #[serde(default = "legacy_checkpoint_version")]
-    /// Checkpoint schema version.
+    /// Explicit schema version; resuming accepts only the current version.
     pub version: u32,
     /// Backend upload identifier.
     pub upload_id: String,
@@ -126,7 +137,7 @@ pub struct ResumableUploadCheckpoint {
     #[serde(default)]
     /// Optional checksum algorithm used for uploaded parts.
     pub checksum_algorithm: Option<PartChecksumAlgorithm>,
-    /// Completed parts keyed by part number.
+    /// Completed parts keyed by their matching, nonzero part number.
     pub completed_parts: BTreeMap<u32, UploadedPart>,
 }
 
@@ -214,18 +225,14 @@ impl ResumableUploadOptions {
         self
     }
 
-    /// Enables checksum verification for uploaded parts.
+    /// Sets checksum generation and verification for uploaded parts.
+    ///
+    /// `None` disables a previously configured algorithm.
     pub fn with_part_checksum_algorithm(
         mut self,
-        part_checksum_algorithm: PartChecksumAlgorithm,
+        part_checksum_algorithm: Option<PartChecksumAlgorithm>,
     ) -> Self {
-        self.part_checksum_algorithm = Some(part_checksum_algorithm);
-        self
-    }
-
-    /// Disables checksum generation and verification for uploaded parts.
-    pub fn without_part_checksum_algorithm(mut self) -> Self {
-        self.part_checksum_algorithm = None;
+        self.part_checksum_algorithm = part_checksum_algorithm;
         self
     }
 
@@ -429,15 +436,25 @@ where
         /// Checksum algorithm configured in the active options.
         options_checksum_algorithm: &'static str,
     },
-    /// The checkpoint version was newer than this crate understands.
+    /// The checkpoint version did not match the current schema.
     #[error(
-        "unsupported checkpoint version {checkpoint_version}; max supported is {max_supported_version}"
+        "unsupported checkpoint version {checkpoint_version}; supported version is {supported_version}"
     )]
     UnsupportedCheckpointVersion {
         /// Version stored in the checkpoint.
         checkpoint_version: u32,
-        /// Highest checkpoint version supported by this crate.
-        max_supported_version: u32,
+        /// Checkpoint version supported by this crate.
+        supported_version: u32,
+    },
+    /// A completed part had a zero number or disagreed with its checkpoint key.
+    #[error(
+        "invalid checkpoint part number {part_number} at key {checkpoint_key}; both must be equal and greater than zero"
+    )]
+    InvalidCheckpointPartNumber {
+        /// Key identifying the part in the checkpoint.
+        checkpoint_key: u32,
+        /// Part number recorded in the part metadata.
+        part_number: u32,
     },
     /// The checkpoint upload id was empty.
     #[error("checkpoint upload id is empty")]
@@ -645,17 +662,8 @@ pub trait BlockingResumableUploadBackend {
 }
 
 /// Backend contract for async resumable uploads.
-#[cfg(feature = "_async")]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(any(
-        feature = "async-tls-rustls-ring",
-        feature = "async-tls-rustls-aws-lc-rs",
-        feature = "async-tls-rustls-graviola",
-        feature = "async-tls-rustls-no-provider",
-        feature = "async-tls-native"
-    )))
-)]
+#[cfg(feature = "resumable-upload-async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "resumable-upload-async")))]
 pub trait AsyncResumableUploadBackend {
     /// Backend-specific error type.
     type Error: std::error::Error + Send + Sync + 'static;

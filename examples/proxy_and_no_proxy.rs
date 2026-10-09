@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "127.0.0.0/8",
             "2001:db8::/32",
             ".internal.example.com",
-        ])
+        ])?
         .build()?;
 
     // This example focuses on proxy configuration. Update the proxy URI above and

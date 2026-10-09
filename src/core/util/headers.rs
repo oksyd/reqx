@@ -8,11 +8,9 @@ use crate::core::error::Error;
 
 const MAX_ERROR_BODY_LEN: usize = 2048;
 
-pub(crate) fn merge_headers(default_headers: &HeaderMap, request_headers: &HeaderMap) -> HeaderMap {
+pub(crate) fn merge_headers(default_headers: &HeaderMap, request_headers: HeaderMap) -> HeaderMap {
     let mut merged = default_headers.clone();
-    for (name, value) in request_headers {
-        merged.insert(name.clone(), value.clone());
-    }
+    merged.extend(request_headers);
     merged
 }
 

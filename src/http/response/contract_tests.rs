@@ -6,6 +6,30 @@ use super::Response;
 use crate::core::error::Error;
 
 #[test]
+fn owned_text_conversions_match_borrowed_decoding() {
+    for bytes in [
+        b"hello".to_vec(),
+        "hello 世界".as_bytes().to_vec(),
+        b"hello\xff".to_vec(),
+    ] {
+        let response = Response::new(StatusCode::OK, HeaderMap::new(), Bytes::from(bytes));
+        let expected_text = response
+            .text()
+            .map(str::to_owned)
+            .map_err(|error| error.to_string());
+        let expected_lossy = response.text_lossy();
+        assert_eq!(
+            response
+                .clone()
+                .into_text()
+                .map_err(|error| error.to_string()),
+            expected_text
+        );
+        assert_eq!(response.into_text_lossy(), expected_lossy);
+    }
+}
+
+#[test]
 fn response_json_decode_error_contains_body() {
     let response = Response::new(
         http::StatusCode::OK,

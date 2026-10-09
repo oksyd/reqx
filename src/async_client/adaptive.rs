@@ -18,7 +18,6 @@ pub(super) struct AdaptiveConcurrencyController {
 
 impl AdaptiveConcurrencyController {
     pub(super) fn new(policy: AdaptiveConcurrencyPolicy, clock: Arc<dyn Clock>) -> Self {
-        let policy = policy.normalize_for_runtime();
         Self {
             policy,
             state: Mutex::new(AdaptiveConcurrencyState::new(policy)),
@@ -74,7 +73,9 @@ impl AdaptiveConcurrencyPermit {
             .now_monotonic()
             .saturating_duration_since(self.started_at)
     }
+}
 
+impl crate::core::execution::AttemptOutcome for AdaptiveConcurrencyPermit {
     fn mark_success(mut self) {
         self.controller
             .release_and_record(AdaptiveConcurrencyOutcome::Success, self.latency());
@@ -93,25 +94,10 @@ impl AdaptiveConcurrencyPermit {
     }
 }
 
-impl crate::core::execution::AttemptOutcome for AdaptiveConcurrencyPermit {
-    fn mark_success(self) {
-        Self::mark_success(self);
-    }
-
-    fn mark_failure(self) {
-        Self::mark_failure(self);
-    }
-
-    fn cancel(self) {
-        Self::cancel(self);
-    }
-}
-
 impl Drop for AdaptiveConcurrencyPermit {
     fn drop(&mut self) {
         if !self.completed {
             self.controller.release_without_record();
-            self.completed = true;
         }
     }
 }

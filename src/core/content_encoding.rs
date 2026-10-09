@@ -6,6 +6,8 @@
 ))]
 use std::io::Read;
 
+use crate::core::error::Error;
+
 use bytes::Bytes;
 use http::HeaderMap;
 use http::header::CONTENT_ENCODING;
@@ -23,6 +25,25 @@ use crate::core::util::read_retry_interrupted;
 pub(crate) enum DecodeContentEncodingError {
     Decode { encoding: String, message: String },
     TooLarge { actual_bytes: usize },
+}
+
+impl DecodeContentEncodingError {
+    pub(crate) fn into_error(self, method: &Method, uri: &str, max_bytes: usize) -> Error {
+        match self {
+            Self::Decode { encoding, message } => Error::DecodeContentEncoding {
+                encoding,
+                message,
+                method: method.clone(),
+                uri: uri.to_owned(),
+            },
+            Self::TooLarge { actual_bytes } => Error::ResponseBodyTooLarge {
+                limit_bytes: max_bytes,
+                actual_bytes,
+                method: method.clone(),
+                uri: uri.to_owned(),
+            },
+        }
+    }
 }
 
 #[cfg(any(

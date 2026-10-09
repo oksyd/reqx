@@ -8,36 +8,36 @@ use tokio::time::{sleep, timeout, timeout_at};
 use tracing::{Instrument, debug, info_span, warn};
 
 use crate::async_client::body::{
-    ReadBodyError, ReqBody, RequestBody, buffered_req_body, build_http_request, empty_req_body,
-    read_all_body_limited,
+    ReadBodyError, ReqBody, RequestBody, buffered_req_body, read_all_body_limited,
 };
-use crate::async_client::limiters::{GlobalRequestPermit, HostRequestPermit};
 use crate::async_client::request::RequestBuilder;
-use crate::core::content_encoding::should_decode_content_encoded_body;
+use crate::core::content_encoding::{
+    decode_content_encoded_body_limited, should_decode_content_encoded_body,
+};
 use crate::core::error::{Error, TransportErrorKind, transport_error};
 use crate::core::execution::lifecycle::StreamLifecycle;
 use crate::core::execution::{
     AttemptGuards, BodyReadFailure, BodyReadOutcome, BodyReadRetryContext, RequestCompletion,
-    RequestExecutionPreparation, RequestExecutionState, RequestExecutionStateInput, ResponseMode,
-    ResponseProgress, RetryAttemptState, RetryRequestInput, RetrySchedule, TransportFailurePlan,
-    prepare_retry_request_input, server_throttle_delay,
+    RequestExecutionPreparation, RequestExecutionState, ResponseMode, RetryAttemptState,
+    RetryRequestInput, RetrySchedule, TransportFailurePlan, prepare_retry_request_input,
+    server_throttle_delay,
 };
-use crate::core::extensions::decode_response_body_with_codec_limited;
 use crate::core::metrics::MetricsSnapshot;
 use crate::core::policy::{RequestContext, StatusPolicy};
 use crate::core::proxy::should_bypass_proxy_uri;
-use crate::core::request_builder::{RequestExecutionDefaults, RequestExecutionOptions};
+use crate::core::request_builder::RequestExecutionOverrides;
 use crate::core::retry::{RetryDecision, RetryReason};
 use crate::core::util::{
     bounded_retry_delay, deadline_exceeded_error, duration_millis_ceil,
-    duration_millis_u64_saturating, ensure_accept_encoding, mark_sensitive_headers,
-    total_timeout_deadline, validate_request_framing_headers,
+    duration_millis_u64_saturating, mark_sensitive_headers, total_timeout_deadline,
+    validate_request_framing_headers,
 };
-use crate::http::response::{Response, ResponseStream, ResponseStreamContext, StreamPermits};
+use crate::http::response::{Response, ResponseStream, ResponseStreamContext};
 use crate::rate_limit::{
     ServerThrottleScope, resolve_server_throttle_scope, server_throttle_scope_from_headers,
 };
 use crate::tls::TlsBackend;
+use tokio::sync::OwnedSemaphorePermit;
 
 use super::adaptive::AdaptiveConcurrencyPermit;
 use super::transport::TransportRequestError;
@@ -64,128 +64,80 @@ fn remove_content_encoding_headers(headers: &mut HeaderMap) {
     headers.remove(CONTENT_LENGTH);
 }
 
-struct StreamResponseInput {
-    status: http::StatusCode,
-    response_headers: HeaderMap,
-    response_body: Incoming,
-    method: Method,
-    uri: Uri,
-    redacted_uri: String,
-    transport_timeout: Duration,
-    stream_total_timeout_ms: Option<u128>,
-    stream_deadline_at: Option<Instant>,
-    stream_deadline_slack: Duration,
-    stream_lifecycle: Option<StreamLifecycle>,
-    stream_global_permit: Option<GlobalRequestPermit>,
-    host_permit: HostRequestPermit,
-}
-
 struct StreamResponseBuildInput<'a> {
     status: http::StatusCode,
     response_headers: HeaderMap,
     response_body: Incoming,
     execution: &'a RequestExecutionState,
     transport_timeout: Duration,
-    stream_total_timeout_ms: Option<u128>,
-    stream_deadline_at: Option<Instant>,
-    stream_lifecycle: Option<StreamLifecycle>,
-    stream_global_permit: &'a mut Option<GlobalRequestPermit>,
-    host_permit: HostRequestPermit,
-}
-
-fn stream_retry_response(input: StreamResponseInput) -> RetryResponse {
-    let StreamResponseInput {
-        status,
-        response_headers,
-        response_body,
-        method,
-        uri,
-        redacted_uri,
-        transport_timeout,
-        stream_total_timeout_ms,
-        stream_deadline_at,
-        stream_deadline_slack,
-        stream_lifecycle,
-        stream_global_permit,
-        host_permit,
-    } = input;
-    RetryResponse::Stream(Box::new(ResponseStream::new(
-        status,
-        response_headers,
-        response_body,
-        ResponseStreamContext {
-            method,
-            uri_raw: uri.to_string(),
-            uri_redacted: redacted_uri,
-            timeout_ms: duration_millis_ceil(transport_timeout),
-            total_timeout_ms: stream_total_timeout_ms,
-            deadline_at: stream_deadline_at,
-            deadline_slack: stream_deadline_slack,
-            lifecycle: stream_lifecycle,
-            permits: StreamPermits::new(stream_global_permit, Some(host_permit)),
-        },
-    )))
+    stream_lifecycle: StreamLifecycle,
+    stream_global_permit: Option<OwnedSemaphorePermit>,
+    host_permit: Option<OwnedSemaphorePermit>,
 }
 
 impl Client {
     /// Starts building a client for requests rooted at `base_url`.
     pub fn builder(base_url: impl Into<String>) -> ClientBuilder {
-        ClientBuilder::new(base_url)
+        ClientBuilder::new(
+            base_url,
+            super::builder::AsyncTransportOptions::default(),
+            super::transport::default_tls_backend(),
+        )
     }
 
     /// Starts building a request with an explicit HTTP method.
-    pub fn request(&self, method: Method, path: impl Into<String>) -> RequestBuilder<'_> {
-        RequestBuilder::new(self, method, path.into())
+    pub fn request(&self, method: Method, path: impl Into<String>) -> RequestBuilder {
+        RequestBuilder::new(self.clone(), method, path.into())
     }
 
     /// Starts a `GET` request.
-    pub fn get(&self, path: impl Into<String>) -> RequestBuilder<'_> {
+    pub fn get(&self, path: impl Into<String>) -> RequestBuilder {
         self.request(Method::GET, path)
     }
 
     /// Starts a `POST` request.
-    pub fn post(&self, path: impl Into<String>) -> RequestBuilder<'_> {
+    pub fn post(&self, path: impl Into<String>) -> RequestBuilder {
         self.request(Method::POST, path)
     }
 
     /// Starts a `PUT` request.
-    pub fn put(&self, path: impl Into<String>) -> RequestBuilder<'_> {
+    pub fn put(&self, path: impl Into<String>) -> RequestBuilder {
         self.request(Method::PUT, path)
     }
 
     /// Starts a `PATCH` request.
-    pub fn patch(&self, path: impl Into<String>) -> RequestBuilder<'_> {
+    pub fn patch(&self, path: impl Into<String>) -> RequestBuilder {
         self.request(Method::PATCH, path)
     }
 
     /// Starts a `DELETE` request.
-    pub fn delete(&self, path: impl Into<String>) -> RequestBuilder<'_> {
+    pub fn delete(&self, path: impl Into<String>) -> RequestBuilder {
         self.request(Method::DELETE, path)
     }
 
     /// Returns the current client metrics snapshot.
     pub fn metrics_snapshot(&self) -> MetricsSnapshot {
-        self.metrics.snapshot()
+        self.inner.metrics.snapshot()
     }
 
     /// Returns the TLS backend chosen for this client.
     pub fn tls_backend(&self) -> TlsBackend {
-        self.tls_backend
+        self.inner.tls_backend
     }
 
     /// Returns the default status policy applied to requests.
     pub fn default_status_policy(&self) -> StatusPolicy {
-        self.default_status_policy
+        self.inner.request_defaults.status_policy
     }
 
     fn run_request_interceptors(&self, context: &RequestContext, headers: &mut HeaderMap) {
-        for interceptor in &self.interceptors {
+        for interceptor in &self.inner.interceptors {
             interceptor.on_request(context, headers);
         }
     }
 
     fn should_apply_http_proxy_auth_header(&self, uri: &Uri) -> bool {
-        let Some(proxy_config) = &self.proxy_config else {
+        let Some(proxy_config) = &self.inner.proxy_config else {
             return false;
         };
         let Some(scheme) = uri.scheme_str() else {
@@ -203,7 +155,7 @@ impl Client {
         {
             return;
         }
-        if let Some(proxy_config) = &self.proxy_config
+        if let Some(proxy_config) = &self.inner.proxy_config
             && let Some(proxy_authorization) = &proxy_config.authorization
         {
             headers.insert(PROXY_AUTHORIZATION, proxy_authorization.clone());
@@ -216,19 +168,19 @@ impl Client {
         status: http::StatusCode,
         headers: &HeaderMap,
     ) {
-        for interceptor in &self.interceptors {
+        for interceptor in &self.inner.interceptors {
             interceptor.on_response(context, status, headers);
         }
     }
 
     fn run_error_interceptors(&self, context: &RequestContext, error: &Error) {
-        for interceptor in &self.interceptors {
+        for interceptor in &self.inner.interceptors {
             interceptor.on_error(context, error);
         }
     }
 
     fn run_request_start_observers(&self, context: &RequestContext) {
-        for observer in &self.observers {
+        for observer in &self.inner.observers {
             observer.on_request_start(context);
         }
     }
@@ -239,7 +191,7 @@ impl Client {
         decision: &RetryDecision,
         delay: Duration,
     ) {
-        for observer in &self.observers {
+        for observer in &self.inner.observers {
             observer.on_retry_scheduled(context, decision, delay);
         }
     }
@@ -250,7 +202,7 @@ impl Client {
         scope: ServerThrottleScope,
         delay: Duration,
     ) {
-        for observer in &self.observers {
+        for observer in &self.inner.observers {
             observer.on_server_throttle(context, scope, delay);
         }
     }
@@ -262,31 +214,32 @@ impl Client {
             response_body,
             execution,
             transport_timeout,
-            stream_total_timeout_ms,
-            stream_deadline_at,
             stream_lifecycle,
             stream_global_permit,
             host_permit,
         } = input;
-        stream_retry_response(StreamResponseInput {
+        let timing = execution.stream_timing();
+        RetryResponse::Stream(Box::new(ResponseStream::new(
             status,
             response_headers,
             response_body,
-            method: execution.current_method().clone(),
-            uri: execution.current_uri().clone(),
-            redacted_uri: execution.current_redacted_uri().to_owned(),
-            transport_timeout,
-            stream_total_timeout_ms,
-            stream_deadline_at,
-            stream_deadline_slack: self.stream_deadline_slack,
-            stream_lifecycle,
-            stream_global_permit: stream_global_permit.take(),
-            host_permit,
-        })
+            ResponseStreamContext {
+                method: execution.current_method().clone(),
+                uri_raw: execution.current_uri().to_string(),
+                uri_redacted: execution.current_redacted_uri().to_owned(),
+                timeout_ms: duration_millis_ceil(transport_timeout),
+                total_timeout_ms: timing.total_timeout_ms,
+                deadline_at: timing.deadline_at,
+                deadline_slack: self.inner.stream_deadline_slack,
+                lifecycle: stream_lifecycle,
+                global_permit: stream_global_permit,
+                host_permit,
+            },
+        )))
     }
 
     fn try_consume_retry_budget(&self, method: &Method, uri: &str) -> Result<(), Error> {
-        let Some(retry_budget) = &self.retry_budget else {
+        let Some(retry_budget) = &self.inner.retry_budget else {
             return Ok(());
         };
         if retry_budget.try_consume_retry() {
@@ -304,7 +257,7 @@ impl Client {
         method: &Method,
         uri: &str,
     ) -> Result<Option<crate::resilience::CircuitAttempt>, Error> {
-        let Some(circuit_breaker) = &self.circuit_breaker else {
+        let Some(circuit_breaker) = &self.inner.circuit_breaker else {
             return Ok(None);
         };
 
@@ -325,7 +278,7 @@ impl Client {
         method: &Method,
         uri: &str,
     ) -> Result<Option<AdaptiveConcurrencyPermit>, Error> {
-        let Some(controller) = self.adaptive_concurrency.as_ref() else {
+        let Some(controller) = self.inner.adaptive_concurrency.as_ref() else {
             return Ok(None);
         };
         let Some(deadline_at) = total_timeout_deadline(total_timeout, request_started_at) else {
@@ -354,7 +307,7 @@ impl Client {
         method: &Method,
         uri: &str,
     ) -> Result<(), Error> {
-        let Some(rate_limiter) = &self.rate_limiter else {
+        let Some(rate_limiter) = &self.inner.rate_limiter else {
             return Ok(());
         };
 
@@ -381,17 +334,18 @@ impl Client {
         if status != http::StatusCode::TOO_MANY_REQUESTS {
             return;
         }
-        let throttle_delay = server_throttle_delay(self.clock.as_ref(), headers, fallback_delay);
+        let throttle_delay =
+            server_throttle_delay(self.inner.clock.as_ref(), headers, fallback_delay);
         let header_scope_hint = server_throttle_scope_from_headers(headers);
-        let resolved_scope = match &self.rate_limiter {
+        let resolved_scope = match &self.inner.rate_limiter {
             Some(rate_limiter) => rate_limiter.observe_server_throttle(
                 host,
                 throttle_delay,
-                self.server_throttle_scope,
+                self.inner.server_throttle_scope,
                 header_scope_hint,
             ),
             None => resolve_server_throttle_scope(
-                self.server_throttle_scope,
+                self.inner.server_throttle_scope,
                 header_scope_hint,
                 host.is_some(),
                 false,
@@ -414,15 +368,9 @@ impl Client {
         if !should_decode_content_encoded_body(method, status, body.len()) {
             return Ok(body);
         }
-        decode_response_body_with_codec_limited(
-            self.body_codec.as_ref(),
-            body,
-            headers,
-            max_response_body_bytes,
-            method,
-            redacted_uri,
-        )
-        .inspect_err(|error| self.run_error_interceptors(context, error))
+        decode_content_encoded_body_limited(body, headers, max_response_body_bytes)
+            .map_err(|error| error.into_error(method, redacted_uri, max_response_body_bytes))
+            .inspect_err(|error| self.run_error_interceptors(context, error))
     }
 
     fn prepare_retry(
@@ -473,7 +421,7 @@ impl Client {
             }
         }
 
-        self.metrics.record_retry();
+        self.inner.metrics.record_retry();
         self.run_retry_observers(context, retry_decision, retry_delay);
         Ok(RetrySchedule::Scheduled { delay: retry_delay })
     }
@@ -488,8 +436,8 @@ impl Client {
         let retry_plan = state.status_retry_plan(
             status,
             headers,
-            self.clock.as_ref(),
-            self.backoff_source.as_ref(),
+            self.inner.clock.as_ref(),
+            self.inner.backoff_source.as_deref(),
         );
         let retry_error = state.status_retry_error(status, headers);
         self.prepare_retry(
@@ -542,8 +490,8 @@ impl Client {
         {
             Ok(Ok(body)) => Ok(BodyReadOutcome::Body(body)),
             Ok(Err(ReadBodyError::Read(source))) => {
-                let failure =
-                    read_context.response_body_read_failure(source, self.backoff_source.as_ref());
+                let failure = read_context
+                    .response_body_read_failure(source, self.inner.backoff_source.as_deref());
                 self.handle_body_read_failure(&mut read_context, failure)
             }
             Ok(Err(ReadBodyError::TooLarge { actual_bytes })) => {
@@ -552,8 +500,8 @@ impl Client {
                 Err(error)
             }
             Err(_) => {
-                let failure =
-                    read_context.response_body_timeout_failure(self.backoff_source.as_ref());
+                let failure = read_context
+                    .response_body_timeout_failure(self.inner.backoff_source.as_deref());
                 self.handle_body_read_failure(&mut read_context, failure)
             }
         }
@@ -609,9 +557,9 @@ impl Client {
         request_started_at: Instant,
         method: &Method,
         uri: &str,
-    ) -> Result<GlobalRequestPermit, Error> {
-        let Some(limiters) = &self.request_limiters else {
-            return Ok(GlobalRequestPermit { _permit: None });
+    ) -> Result<Option<OwnedSemaphorePermit>, Error> {
+        let Some(limiters) = &self.inner.request_limiters else {
+            return Ok(None);
         };
         let Some(deadline_at) = total_timeout_deadline(total_timeout, request_started_at) else {
             return limiters.acquire_global().await;
@@ -638,9 +586,9 @@ impl Client {
         request_started_at: Instant,
         method: &Method,
         uri: &str,
-    ) -> Result<HostRequestPermit, Error> {
-        let Some(limiters) = &self.request_limiters else {
-            return Ok(HostRequestPermit { _permit: None });
+    ) -> Result<Option<OwnedSemaphorePermit>, Error> {
+        let Some(limiters) = &self.inner.request_limiters else {
+            return Ok(None);
         };
         let Some(deadline_at) = total_timeout_deadline(total_timeout, request_started_at) else {
             return limiters.acquire_host(host).await;
@@ -665,7 +613,7 @@ impl Client {
         transport_timeout: Duration,
         request: Request<ReqBody>,
     ) -> Result<HttpResponse<Incoming>, TransportRequestError> {
-        match timeout(transport_timeout, self.transport.request(request)).await {
+        match timeout(transport_timeout, self.inner.transport.request(request)).await {
             Ok(result) => result,
             Err(_) => Err(TransportRequestError::Timeout),
         }
@@ -677,38 +625,30 @@ impl Client {
         path: String,
         headers: HeaderMap,
         body: Option<RequestBody>,
-        execution_options: RequestExecutionOptions,
+        execution_options: RequestExecutionOverrides,
     ) -> Result<Response, Error> {
-        let request_input = prepare_retry_request_input(
-            RequestExecutionPreparation {
-                endpoint_selector: self.endpoint_selector.as_ref(),
-                configured_base_url: &self.base_url,
-                method,
-                path,
-                default_headers: &self.default_headers,
-                headers,
-                body,
-                execution_options,
-                defaults: RequestExecutionDefaults {
-                    request_timeout: self.request_timeout,
-                    total_timeout: self.total_timeout,
-                    retry_policy: &self.retry_policy,
-                    max_response_body_bytes: self.max_response_body_bytes,
-                    redirect_policy: self.redirect_policy,
-                    status_policy: self.default_status_policy,
-                    auto_accept_encoding: self.buffered_auto_accept_encoding,
-                },
-            },
-            RequestBody::empty,
-            ensure_accept_encoding,
-        )?;
+        let request_input = prepare_retry_request_input(RequestExecutionPreparation {
+            endpoint_selector: self.inner.endpoint_selector.as_deref(),
+            configured_base_url: &self.inner.base_url,
+            method,
+            path,
+            default_headers: &self.inner.default_headers,
+            headers,
+            body,
+            execution_options,
+            defaults: &self.inner.request_defaults,
+            default_auto_accept_encoding: self.inner.buffered_auto_accept_encoding,
+        })?;
         let redacted_uri_text = request_input.redacted_uri_text.clone();
         let method = request_input.method.clone();
         let total_timeout = request_input.execution_options.total_timeout;
         let request_started_at = Instant::now();
-        let completion =
-            self.metrics
-                .pending_request(&method, &redacted_uri_text, false, request_started_at);
+        let completion = self.inner.metrics.pending_request(
+            &method,
+            &redacted_uri_text,
+            false,
+            request_started_at,
+        );
         let _global_permit = match self
             .acquire_global_request_permit(
                 total_timeout,
@@ -726,8 +666,21 @@ impl Client {
         };
 
         let result = self
-            .send_request_with_retry(request_input, request_started_at)
-            .await;
+            .send_request_with_retry_mode(
+                request_input,
+                ResponseMode::Buffered,
+                None,
+                request_started_at,
+            )
+            .await
+            .and_then(|response| match response {
+                RetryResponse::Buffered(response) => Ok(response),
+                RetryResponse::Stream(_) => Err(response_mode_mismatch_error(
+                    &method,
+                    &redacted_uri_text,
+                    "buffered",
+                )),
+            });
         match &result {
             Ok(response) => completion.complete_success(response.status().as_u16()),
             Err(error) => completion.complete_error(error),
@@ -741,38 +694,30 @@ impl Client {
         path: String,
         headers: HeaderMap,
         body: Option<RequestBody>,
-        execution_options: RequestExecutionOptions,
+        execution_options: RequestExecutionOverrides,
     ) -> Result<ResponseStream, Error> {
-        let request_input = prepare_retry_request_input(
-            RequestExecutionPreparation {
-                endpoint_selector: self.endpoint_selector.as_ref(),
-                configured_base_url: &self.base_url,
-                method,
-                path,
-                default_headers: &self.default_headers,
-                headers,
-                body,
-                execution_options,
-                defaults: RequestExecutionDefaults {
-                    request_timeout: self.request_timeout,
-                    total_timeout: self.total_timeout,
-                    retry_policy: &self.retry_policy,
-                    max_response_body_bytes: self.max_response_body_bytes,
-                    redirect_policy: self.redirect_policy,
-                    status_policy: self.default_status_policy,
-                    auto_accept_encoding: self.stream_auto_accept_encoding,
-                },
-            },
-            RequestBody::empty,
-            ensure_accept_encoding,
-        )?;
+        let request_input = prepare_retry_request_input(RequestExecutionPreparation {
+            endpoint_selector: self.inner.endpoint_selector.as_deref(),
+            configured_base_url: &self.inner.base_url,
+            method,
+            path,
+            default_headers: &self.inner.default_headers,
+            headers,
+            body,
+            execution_options,
+            defaults: &self.inner.request_defaults,
+            default_auto_accept_encoding: self.inner.stream_auto_accept_encoding,
+        })?;
         let redacted_uri_text = request_input.redacted_uri_text.clone();
         let method = request_input.method.clone();
         let total_timeout = request_input.execution_options.total_timeout;
         let request_started_at = Instant::now();
-        let completion =
-            self.metrics
-                .pending_request(&method, &redacted_uri_text, true, request_started_at);
+        let completion = self.inner.metrics.pending_request(
+            &method,
+            &redacted_uri_text,
+            true,
+            request_started_at,
+        );
         let global_permit = match self
             .acquire_global_request_permit(
                 total_timeout,
@@ -788,14 +733,11 @@ impl Client {
                 return Err(error);
             }
         };
-        let expected_method = method.clone();
-        let expected_redacted_uri = redacted_uri_text.clone();
-
         match self
             .send_request_with_retry_mode(
                 request_input,
                 ResponseMode::Stream,
-                Some(global_permit),
+                global_permit,
                 request_started_at,
             )
             .await
@@ -807,11 +749,7 @@ impl Client {
                 Ok(response)
             }
             Ok(RetryResponse::Buffered(_)) => {
-                let error = response_mode_mismatch_error(
-                    &expected_method,
-                    &expected_redacted_uri,
-                    "stream",
-                );
+                let error = response_mode_mismatch_error(&method, &redacted_uri_text, "stream");
                 completion.complete_error(&error);
                 Err(error)
             }
@@ -822,80 +760,26 @@ impl Client {
         }
     }
 
-    async fn send_request_with_retry(
-        &self,
-        input: RetryRequestInput<RequestBody>,
-        request_started_at: Instant,
-    ) -> Result<Response, Error> {
-        let expected_method = input.method.clone();
-        let expected_redacted_uri = input.redacted_uri_text.clone();
-        match self
-            .send_request_with_retry_mode(input, ResponseMode::Buffered, None, request_started_at)
-            .await?
-        {
-            RetryResponse::Buffered(response) => Ok(response),
-            RetryResponse::Stream(_) => Err(response_mode_mismatch_error(
-                &expected_method,
-                &expected_redacted_uri,
-                "buffered",
-            )),
-        }
-    }
-
     async fn send_request_with_retry_mode(
         &self,
         input: RetryRequestInput<RequestBody>,
         response_mode: ResponseMode,
-        stream_global_permit: Option<GlobalRequestPermit>,
+        stream_global_permit: Option<OwnedSemaphorePermit>,
         request_started_at: Instant,
     ) -> Result<RetryResponse, Error> {
-        let RetryRequestInput {
-            method,
-            uri,
-            redacted_uri_text,
-            merged_headers,
-            body,
-            execution_options,
-        } = input;
-        let timeout_value = execution_options.request_timeout;
-        let total_timeout = execution_options.total_timeout;
-        let max_response_body_bytes = execution_options.max_response_body_bytes;
-        let (mut buffered_body, mut streaming_body) = match body {
-            RequestBody::Buffered(body) => (Some(body), None),
-            RequestBody::Streaming(body) => (None, Some(body)),
-        };
-        let body_replayable = buffered_body.is_some();
-        let retry_policy = execution_options.retry_policy;
-        let redirect_policy = execution_options.redirect_policy;
-        let status_policy = execution_options.status_policy;
-        let mut execution = RequestExecutionState::new(
-            RequestExecutionStateInput {
-                method,
-                uri,
-                redacted_uri_text,
-                merged_headers,
-                body_replayable,
-                retry_policy,
-                redirect_policy,
-                status_policy,
-                timeout_value,
-                total_timeout,
-                max_response_body_bytes,
-                request_started_at,
-            },
-            self.retry_eligibility.as_ref(),
+        let (mut execution, mut body) = RequestExecutionState::from_request(
+            input,
+            request_started_at,
+            self.inner.retry_eligibility.as_ref(),
         );
 
-        let stream_timing = execution.stream_timing();
-        let stream_total_timeout_ms = stream_timing.total_timeout_ms;
-        let stream_deadline_at = stream_timing.deadline_at;
         let mut stream_global_permit = stream_global_permit;
 
         while execution.can_attempt() {
             let span = if response_mode.is_stream() {
                 info_span!(
                     "reqx.request.stream",
-                    client = %self.client_name,
+                    client = %self.inner.client_name,
                     method = %execution.current_method(),
                     uri = %execution.current_redacted_uri(),
                     attempt = execution.attempt(),
@@ -904,7 +788,7 @@ impl Client {
             } else {
                 info_span!(
                     "reqx.request",
-                    client = %self.client_name,
+                    client = %self.inner.client_name,
                     method = %execution.current_method(),
                     uri = %execution.current_redacted_uri(),
                     attempt = execution.attempt(),
@@ -980,15 +864,12 @@ impl Client {
             attempts.set_adaptive(adaptive_attempt);
             let mut attempt_headers = execution.current_headers().clone();
             self.run_request_interceptors(&context, &mut attempt_headers);
-            execution.tighten_retry_eligibility(&attempt_headers, self.retry_eligibility.as_ref());
+            execution
+                .tighten_retry_eligibility(&attempt_headers, self.inner.retry_eligibility.as_ref());
             context = execution.context();
-            let expected_body_len = buffered_body
-                .as_ref()
-                .map(Bytes::len)
-                .or_else(|| streaming_body.is_none().then_some(0));
             if let Err(error) = validate_request_framing_headers(
                 &attempt_headers,
-                expected_body_len,
+                body.known_length(),
                 execution.current_method(),
                 execution.current_redacted_uri(),
             ) {
@@ -1006,25 +887,14 @@ impl Client {
                 self.run_error_interceptors(&context, &error);
                 return Err(error);
             };
-            let request_body = if let Some(body) = &buffered_body {
-                buffered_req_body(body.clone())
-            } else {
-                streaming_body.take().unwrap_or_else(empty_req_body)
+            let request_body = match body.take_for_attempt() {
+                RequestBody::Buffered(bytes) => buffered_req_body(bytes),
+                RequestBody::Streaming(stream) => stream,
             };
-            let request = build_http_request(
-                execution.current_method().clone(),
-                execution.current_uri().clone(),
-                &attempt_headers,
-                request_body,
-            );
-            let request = match request {
-                Ok(request) => request,
-                Err(error) => {
-                    attempts.cancel();
-                    self.run_error_interceptors(&context, &error);
-                    return Err(error);
-                }
-            };
+            let mut request = Request::new(request_body);
+            *request.method_mut() = execution.current_method().clone();
+            *request.uri_mut() = execution.current_uri().clone();
+            *request.headers_mut() = attempt_headers;
             let response = match self
                 .send_transport_request(transport_timeout, request)
                 .instrument(span.clone())
@@ -1033,7 +903,9 @@ impl Client {
                 Ok(response) => response,
                 Err(error) => {
                     let error = error.into_error(&execution, transport_timeout);
-                    match execution.transport_failure_plan(&error, self.backoff_source.as_ref()) {
+                    match execution
+                        .transport_failure_plan(&error, self.inner.backoff_source.as_deref())
+                    {
                         TransportFailurePlan::Retry(retry_plan) => {
                             match attempts.record_failure_for_retry_schedule(self.prepare_retry(
                                 execution.retry_attempt(),
@@ -1078,65 +950,47 @@ impl Client {
             if let Some(redirect_action) = redirect_action {
                 self.run_response_interceptors(&context, status, &response_headers);
                 attempts.mark_success();
-                let drops_body =
-                    execution.apply_redirect(redirect_action, self.retry_eligibility.as_ref());
+                let drops_body = execution
+                    .apply_redirect(redirect_action, self.inner.retry_eligibility.as_ref());
                 if drops_body {
-                    buffered_body = None;
-                    streaming_body = None;
+                    body = RequestBody::default();
                 }
                 continue;
             }
 
-            let mut response_progress = ResponseProgress::default();
+            self.run_response_interceptors(&context, status, &response_headers);
 
-            if response_mode.is_stream() {
-                response_progress.run_response_interceptors_if_needed(|| {
-                    self.run_response_interceptors(&context, status, &response_headers);
-                });
-
-                if status.is_success() {
-                    let stream_lifecycle = RequestCompletion::success()
-                        .into_stream_lifecycle(&mut attempts, self.retry_budget.clone());
-                    return Ok(self.stream_response(StreamResponseBuildInput {
-                        status,
-                        response_headers,
-                        response_body: response.into_body(),
-                        execution: &execution,
-                        transport_timeout,
-                        stream_total_timeout_ms,
-                        stream_deadline_at,
-                        stream_lifecycle,
-                        stream_global_permit: &mut stream_global_permit,
-                        host_permit,
-                    }));
-                }
+            if response_mode.is_stream() && status.is_success() {
+                let stream_lifecycle = RequestCompletion::Success
+                    .into_stream_lifecycle(&mut attempts, self.inner.retry_budget.clone());
+                return Ok(self.stream_response(StreamResponseBuildInput {
+                    status,
+                    response_headers,
+                    response_body: response.into_body(),
+                    execution: &execution,
+                    transport_timeout,
+                    stream_lifecycle,
+                    stream_global_permit: stream_global_permit.take(),
+                    host_permit,
+                }));
             }
 
             if !status.is_success() {
                 let server_throttle_fallback_delay =
-                    execution.retry_backoff(self.backoff_source.as_ref());
-                match attempts.record_failure_for_retry_schedule(
-                    response_progress.prepare_non_success_before_body(
-                        || self.run_response_interceptors(&context, status, &response_headers),
-                        || {
-                            self.observe_server_throttle(
-                                &context,
-                                status,
-                                &response_headers,
-                                rate_limit_host.as_deref(),
-                                server_throttle_fallback_delay,
-                            );
-                        },
-                        || {
-                            self.prepare_status_retry(
-                                &mut execution,
-                                &context,
-                                status,
-                                &response_headers,
-                            )
-                        },
-                    ),
-                )? {
+                    execution.retry_backoff(self.inner.backoff_source.as_deref());
+                self.observe_server_throttle(
+                    &context,
+                    status,
+                    &response_headers,
+                    rate_limit_host.as_deref(),
+                    server_throttle_fallback_delay,
+                );
+                match attempts.record_failure_for_retry_schedule(self.prepare_status_retry(
+                    &mut execution,
+                    &context,
+                    status,
+                    &response_headers,
+                ))? {
                     RetrySchedule::Scheduled { delay: retry_delay } => {
                         drop(response);
                         drop(host_permit);
@@ -1153,25 +1007,19 @@ impl Client {
                 if response_mode.is_stream() && execution.should_return_non_success_response() {
                     let stream_lifecycle = execution
                         .non_success_completion(status)
-                        .into_stream_lifecycle(&mut attempts, self.retry_budget.clone());
+                        .into_stream_lifecycle(&mut attempts, self.inner.retry_budget.clone());
                     return Ok(self.stream_response(StreamResponseBuildInput {
                         status,
                         response_headers,
                         response_body: response.into_body(),
                         execution: &execution,
                         transport_timeout,
-                        stream_total_timeout_ms,
-                        stream_deadline_at,
                         stream_lifecycle,
-                        stream_global_permit: &mut stream_global_permit,
+                        stream_global_permit: stream_global_permit.take(),
                         host_permit,
                     }));
                 }
             }
-
-            response_progress.run_response_interceptors_if_needed(|| {
-                self.run_response_interceptors(&context, status, &response_headers);
-            });
 
             let Some(read_timeout) = execution.phase_timeout() else {
                 let error = execution.deadline_error();
@@ -1213,7 +1061,7 @@ impl Client {
             if !status.is_success() {
                 if execution.should_return_non_success_response() && response_mode.is_buffered() {
                     let completion = execution.non_success_completion(status);
-                    completion.record_completed(&mut attempts, self.retry_budget.as_ref());
+                    completion.record_completed(&mut attempts, self.inner.retry_budget.as_ref());
                     return Ok(RetryResponse::Buffered(Response::new(
                         status,
                         response_headers,
@@ -1225,13 +1073,13 @@ impl Client {
                     execution.terminal_non_success(status, &response_headers, &response_body);
                 terminal
                     .completion
-                    .record_completed(&mut attempts, self.retry_budget.as_ref());
+                    .record_completed(&mut attempts, self.inner.retry_budget.as_ref());
                 self.run_error_interceptors(&context, &terminal.error);
                 return Err(terminal.error);
             }
 
-            RequestCompletion::success()
-                .record_completed(&mut attempts, self.retry_budget.as_ref());
+            RequestCompletion::Success
+                .record_completed(&mut attempts, self.inner.retry_budget.as_ref());
             return Ok(RetryResponse::Buffered(Response::new(
                 status,
                 response_headers,

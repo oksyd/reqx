@@ -13,8 +13,8 @@ use bytes::Bytes;
 use http::Uri;
 use http::header::{CONTENT_LENGTH, HeaderName, HeaderValue, TRANSFER_ENCODING, USER_AGENT};
 use reqx::advanced::{
-    AdaptiveConcurrencyPolicy, BodyCodec, CircuitBreakerPolicy, Clock, Interceptor, Observer,
-    RateLimitPolicy, RequestContext, RetryBudgetPolicy, ServerThrottleScope, StatusPolicy,
+    AdaptiveConcurrencyPolicy, CircuitBreakerPolicy, Clock, Interceptor, Observer, RateLimitPolicy,
+    RequestContext, RetryBudgetPolicy, ServerThrottleScope, StatusPolicy,
 };
 use reqx::blocking::Client;
 use reqx::prelude::{Error, RedirectPolicy, RetryPolicy, TlsRootStore};
@@ -124,14 +124,6 @@ struct CapturedRequest {
 }
 
 #[derive(Debug)]
-struct SlowBodyCodec {
-    delay: Duration,
-}
-
-#[derive(Debug)]
-struct OversizedBodyCodec;
-
-#[derive(Debug)]
 struct FastForwardClock;
 
 impl Clock for FastForwardClock {
@@ -141,33 +133,6 @@ impl Clock for FastForwardClock {
 
     fn now_monotonic(&self) -> Instant {
         Instant::now() + Duration::from_secs(3_600)
-    }
-}
-
-impl BodyCodec for SlowBodyCodec {
-    fn decode_response_body_limited(
-        &self,
-        body: Bytes,
-        _headers: &http::HeaderMap,
-        _max_response_body_bytes: usize,
-        _method: &http::Method,
-        _uri: &str,
-    ) -> Result<Bytes, Error> {
-        thread::sleep(self.delay);
-        Ok(body)
-    }
-}
-
-impl BodyCodec for OversizedBodyCodec {
-    fn decode_response_body_limited(
-        &self,
-        _body: Bytes,
-        _headers: &http::HeaderMap,
-        _max_response_body_bytes: usize,
-        _method: &http::Method,
-        _uri: &str,
-    ) -> Result<Bytes, Error> {
-        Ok(Bytes::from_static(b"oversized"))
     }
 }
 
@@ -775,7 +740,6 @@ fn blocking_json_helper_replaces_stale_content_length_from_previous_body() {
     let response = client
         .post("/v1/json")
         .body_reader_with_length(Cursor::new(Vec::<u8>::new()), 1)
-        .expect("reader content-length should parse")
         .json(&payload)
         .expect("json serialization should succeed")
         .send()
@@ -846,7 +810,6 @@ fn blocking_body_reader_replaces_stale_helper_content_length() {
     let response = client
         .post("/v1/upload")
         .body_reader_with_length(Cursor::new(Vec::<u8>::new()), 1)
-        .expect("reader content-length should parse")
         .body_reader(Cursor::new(b"streamed".to_vec()))
         .send()
         .expect("request should succeed");
@@ -995,7 +958,7 @@ fn blocking_interceptor_cannot_introduce_ambiguous_content_length() {
     let client = Client::builder("http://127.0.0.1:9")
         .request_timeout(Duration::from_millis(300))
         .retry_policy(RetryPolicy::disabled())
-        .interceptor(DuplicateContentLengthInterceptor)
+        .interceptor(Arc::new(DuplicateContentLengthInterceptor))
         .build()
         .expect("client should build");
 
@@ -1358,11 +1321,11 @@ fn blocking_global_rate_limit_applies_between_requests() {
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_secs(1))
         .retry_policy(RetryPolicy::disabled())
-        .global_rate_limit_policy(
+        .global_rate_limit_policy(Some(
             RateLimitPolicy::standard()
                 .requests_per_second(20.0)
                 .burst(1),
-        )
+        ))
         .build()
         .expect("client should build");
 
@@ -1395,11 +1358,11 @@ fn blocking_retry_after_429_backpressures_following_request() {
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_secs(2))
         .retry_policy(RetryPolicy::disabled())
-        .global_rate_limit_policy(
+        .global_rate_limit_policy(Some(
             RateLimitPolicy::standard()
                 .requests_per_second(500.0)
                 .burst(50),
-        )
+        ))
         .build()
         .expect("client should build");
 
@@ -1442,16 +1405,16 @@ fn blocking_retry_after_429_auto_scope_throttles_same_host_only() {
     let client = Client::builder(server_a.base_url.clone())
         .request_timeout(Duration::from_secs(2))
         .retry_policy(RetryPolicy::disabled())
-        .global_rate_limit_policy(
+        .global_rate_limit_policy(Some(
             RateLimitPolicy::standard()
                 .requests_per_second(500.0)
                 .burst(50),
-        )
-        .per_host_rate_limit_policy(
+        ))
+        .per_host_rate_limit_policy(Some(
             RateLimitPolicy::standard()
                 .requests_per_second(500.0)
                 .burst(50),
-        )
+        ))
         .build()
         .expect("client should build");
 
@@ -1505,16 +1468,16 @@ fn blocking_retry_after_429_global_scope_backpressures_other_hosts() {
     let client = Client::builder(server_a.base_url.clone())
         .request_timeout(Duration::from_secs(2))
         .retry_policy(RetryPolicy::disabled())
-        .global_rate_limit_policy(
+        .global_rate_limit_policy(Some(
             RateLimitPolicy::standard()
                 .requests_per_second(500.0)
                 .burst(50),
-        )
-        .per_host_rate_limit_policy(
+        ))
+        .per_host_rate_limit_policy(Some(
             RateLimitPolicy::standard()
                 .requests_per_second(500.0)
                 .burst(50),
-        )
+        ))
         .server_throttle_scope(ServerThrottleScope::Global)
         .build()
         .expect("client should build");
@@ -1556,18 +1519,18 @@ fn blocking_retry_after_429_observer_receives_resolved_scope() {
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_secs(2))
         .retry_policy(RetryPolicy::disabled())
-        .global_rate_limit_policy(
+        .global_rate_limit_policy(Some(
             RateLimitPolicy::standard()
                 .requests_per_second(500.0)
                 .burst(50),
-        )
-        .per_host_rate_limit_policy(
+        ))
+        .per_host_rate_limit_policy(Some(
             RateLimitPolicy::standard()
                 .requests_per_second(500.0)
                 .burst(50),
-        )
+        ))
         .server_throttle_scope(ServerThrottleScope::Auto)
-        .observer(observer)
+        .observer(Arc::new(observer))
         .build()
         .expect("client should build");
 
@@ -1601,7 +1564,7 @@ fn blocking_retry_after_429_observer_receives_scope_without_rate_limiter() {
         .request_timeout(Duration::from_secs(2))
         .retry_policy(RetryPolicy::disabled())
         .server_throttle_scope(ServerThrottleScope::Auto)
-        .observer(observer)
+        .observer(Arc::new(observer))
         .build()
         .expect("client should build");
 
@@ -1628,7 +1591,7 @@ fn blocking_max_in_flight_enforces_single_active_request() {
     );
     let client = Arc::new(
         Client::builder(format!("http://{}", server.authority()))
-            .max_in_flight(1)
+            .max_in_flight(Some(1))
             .request_timeout(Duration::from_millis(800))
             .retry_policy(RetryPolicy::disabled())
             .build()
@@ -1679,7 +1642,7 @@ fn blocking_max_in_flight_per_host_limits_each_host_independently() {
     );
     let client = Arc::new(
         Client::builder(format!("http://{}", server_a.authority()))
-            .max_in_flight_per_host(1)
+            .max_in_flight_per_host(Some(1))
             .request_timeout(Duration::from_millis(800))
             .retry_policy(RetryPolicy::disabled())
             .build()
@@ -1738,7 +1701,7 @@ fn blocking_status_retry_backoff_releases_per_host_in_flight_slot() {
     ]);
     let client = Arc::new(
         Client::builder(server.base_url.clone())
-            .max_in_flight_per_host(1)
+            .max_in_flight_per_host(Some(1))
             .request_timeout(Duration::from_secs(2))
             .retry_policy(
                 RetryPolicy::standard()
@@ -1798,7 +1761,7 @@ fn blocking_max_in_flight_queue_wait_respects_total_timeout_deadline() {
         Duration::ZERO,
     );
     let client = Client::builder(format!("http://{}", server.authority()))
-        .max_in_flight(1)
+        .max_in_flight(Some(1))
         .request_timeout(Duration::from_millis(800))
         .retry_policy(RetryPolicy::disabled())
         .build()
@@ -1811,7 +1774,7 @@ fn blocking_max_in_flight_queue_wait_respects_total_timeout_deadline() {
 
     let error = client
         .get("/queued-behind-global-permit")
-        .total_timeout(Duration::from_millis(80))
+        .total_timeout(Some(Duration::from_millis(80)))
         .send()
         .expect_err("queued request should stop waiting once total_timeout is exhausted");
     match error {
@@ -1835,7 +1798,7 @@ fn blocking_total_timeout_includes_global_queue_wait_before_send_loop() {
     );
     let client = Arc::new(
         Client::builder(format!("http://{}", server.authority()))
-            .max_in_flight(1)
+            .max_in_flight(Some(1))
             .request_timeout(Duration::from_millis(500))
             .retry_policy(RetryPolicy::disabled())
             .build()
@@ -1851,7 +1814,7 @@ fn blocking_total_timeout_includes_global_queue_wait_before_send_loop() {
     let queued = thread::spawn(move || {
         queued_client
             .get("/queued-total-timeout")
-            .total_timeout(Duration::from_millis(220))
+            .total_timeout(Some(Duration::from_millis(220)))
             .send()
     });
 
@@ -1893,7 +1856,7 @@ fn blocking_total_timeout_recomputes_transport_timeout_after_per_host_queue_wait
     ]);
     let client = Arc::new(
         Client::builder(server.base_url.clone())
-            .max_in_flight_per_host(1)
+            .max_in_flight_per_host(Some(1))
             .request_timeout(Duration::from_millis(1_000))
             .retry_policy(RetryPolicy::disabled())
             .build()
@@ -1910,7 +1873,7 @@ fn blocking_total_timeout_recomputes_transport_timeout_after_per_host_queue_wait
     let queued = thread::spawn(move || {
         queued_client
             .get("/queued-after-host-permit")
-            .total_timeout(Duration::from_millis(200))
+            .total_timeout(Some(Duration::from_millis(200)))
             .send()
     });
 
@@ -1953,12 +1916,12 @@ fn blocking_adaptive_concurrency_queue_wait_respects_total_timeout_deadline() {
     );
     let client = Arc::new(
         Client::builder(format!("http://{}", server.authority()))
-            .adaptive_concurrency_policy(
+            .adaptive_concurrency_policy(Some(
                 AdaptiveConcurrencyPolicy::standard()
                     .min_limit(1)
                     .initial_limit(1)
                     .max_limit(1),
-            )
+            ))
             .request_timeout(Duration::from_millis(700))
             .retry_policy(RetryPolicy::disabled())
             .build()
@@ -1980,7 +1943,7 @@ fn blocking_adaptive_concurrency_queue_wait_respects_total_timeout_deadline() {
 
     let error = client
         .get("/adaptive-second")
-        .total_timeout(Duration::from_millis(80))
+        .total_timeout(Some(Duration::from_millis(80)))
         .send()
         .expect_err("queued adaptive request should stop waiting at total_timeout");
     match error {
@@ -2022,12 +1985,12 @@ fn blocking_retry_budget_exhausted_stops_retry_loop_early() {
                 .max_backoff(Duration::from_millis(2))
                 .jitter_ratio(0.0),
         )
-        .retry_budget_policy(
+        .retry_budget_policy(Some(
             RetryBudgetPolicy::standard()
                 .window(Duration::from_secs(1))
                 .retry_ratio(0.0)
                 .min_retries_per_window(1),
-        )
+        ))
         .request_timeout(Duration::from_secs(1))
         .build()
         .expect("client should build");
@@ -2067,19 +2030,19 @@ fn blocking_retry_budget_stream_body_failure_does_not_credit_success() {
                 .max_backoff(Duration::from_millis(1))
                 .jitter_ratio(0.0),
         )
-        .retry_budget_policy(
+        .retry_budget_policy(Some(
             RetryBudgetPolicy::standard()
                 .window(Duration::from_secs(60))
                 .retry_ratio(1.0)
                 .min_retries_per_window(0),
-        )
+        ))
         .request_timeout(Duration::from_secs(1))
         .build()
         .expect("client should build");
 
     let stream = client
         .get("/v1/stream-budget-credit")
-        .timeout(Duration::from_millis(20))
+        .request_timeout(Duration::from_millis(20))
         .send_stream()
         .expect("stream request should return headers");
     let error = stream
@@ -2102,7 +2065,7 @@ fn blocking_retry_budget_stream_body_failure_does_not_credit_success() {
 }
 
 #[test]
-fn blocking_retry_budget_is_credited_by_non_retryable_send_response() {
+fn blocking_retry_budget_is_credited_by_non_retryable_response_status_policy() {
     support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(404, Vec::<(String, String)>::new(), b"not-found".to_vec()),
@@ -2119,12 +2082,12 @@ fn blocking_retry_budget_is_credited_by_non_retryable_send_response() {
                 .max_backoff(Duration::from_millis(1))
                 .jitter_ratio(0.0),
         )
-        .retry_budget_policy(
+        .retry_budget_policy(Some(
             RetryBudgetPolicy::standard()
                 .window(Duration::from_secs(60))
                 .retry_ratio(1.0)
                 .min_retries_per_window(0),
-        )
+        ))
         .request_timeout(Duration::from_secs(1))
         .build()
         .expect("client should build");
@@ -2180,12 +2143,12 @@ fn blocking_buffered_status_retry_happens_before_body_limit() {
 fn blocking_build_rejects_invalid_adaptive_concurrency_policy() {
     support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
-        .adaptive_concurrency_policy(
+        .adaptive_concurrency_policy(Some(
             AdaptiveConcurrencyPolicy::standard()
                 .min_limit(10)
                 .initial_limit(8)
                 .max_limit(5),
-        )
+        ))
         .build();
 
     let error = match result {
@@ -2260,7 +2223,7 @@ fn blocking_build_rejects_invalid_retry_status_policy() {
 fn blocking_build_rejects_invalid_retry_budget_policy() {
     support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
-        .retry_budget_policy(RetryBudgetPolicy::standard().window(Duration::ZERO))
+        .retry_budget_policy(Some(RetryBudgetPolicy::standard().window(Duration::ZERO)))
         .build();
 
     let error = match result {
@@ -2335,7 +2298,7 @@ fn blocking_build_rejects_invalid_client_name() {
 fn blocking_build_rejects_invalid_concurrency_limit_config() {
     support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
-        .max_in_flight(0)
+        .max_in_flight(Some(0))
         .build();
 
     let error = match result {
@@ -2408,7 +2371,7 @@ fn blocking_request_validates_retry_policy_before_waiting_for_global_permit() {
         b"held-stream".to_vec(),
     )]);
     let client = Client::builder(server.base_url.clone())
-        .max_in_flight(1)
+        .max_in_flight(Some(1))
         .request_timeout(Duration::from_secs(1))
         .retry_policy(RetryPolicy::disabled())
         .metrics_enabled(true)
@@ -2422,7 +2385,7 @@ fn blocking_request_validates_retry_policy_before_waiting_for_global_permit() {
 
     let error = client
         .get("/invalid-before-queue")
-        .total_timeout(Duration::from_millis(50))
+        .total_timeout(Some(Duration::from_millis(50)))
         .retry_policy(RetryPolicy::standard().retryable_status_codes([1000]))
         .send()
         .expect_err("invalid retry policy should fail before queueing");
@@ -2456,7 +2419,7 @@ fn blocking_request_rejects_invalid_timeout_override() {
 
     let error = client
         .get("/v1/invalid-timeout")
-        .timeout(Duration::ZERO)
+        .request_timeout(Duration::ZERO)
         .send()
         .expect_err("invalid request timeout override should fail");
 
@@ -2478,10 +2441,62 @@ fn blocking_request_rejects_invalid_timeout_override() {
 }
 
 #[test]
+fn blocking_request_deadlines_can_be_inherited_disabled_and_overridden() {
+    support::install_crypto_provider();
+    let short = Some(Duration::from_millis(40));
+    let long = Some(Duration::from_secs(1));
+    for streamed in [false, true] {
+        for (client_deadline, override_deadline, succeeds) in [
+            (short, None, false),
+            (short, Some(None), true),
+            (short, Some(long), true),
+            (None, None, true),
+            (None, Some(short), false),
+        ] {
+            let server = MockServer::start(vec![MockResponse::delayed(
+                200,
+                Vec::<(String, String)>::new(),
+                b"ok".to_vec(),
+                Duration::from_millis(120),
+            )]);
+            let client = Client::builder(&server.base_url)
+                .request_timeout(Duration::from_secs(2))
+                .total_timeout(client_deadline)
+                .retry_policy(RetryPolicy::disabled())
+                .build()
+                .expect("client");
+            let request = client.get("/");
+            let request = match override_deadline {
+                Some(deadline) => request.total_timeout(deadline),
+                None => request,
+            };
+            let result = if streamed {
+                request.send_stream().map(|response| response.status())
+            } else {
+                request.send().map(|response| response.status())
+            };
+            if succeeds {
+                assert_eq!(
+                    result.expect("effective deadline should allow response"),
+                    200
+                );
+            } else {
+                assert!(
+                    matches!(result, Err(Error::DeadlineExceeded { .. })),
+                    "effective deadline should expire: {result:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn blocking_build_rejects_invalid_circuit_breaker_policy() {
     support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
-        .circuit_breaker_policy(CircuitBreakerPolicy::standard().open_timeout(Duration::ZERO))
+        .circuit_breaker_policy(Some(
+            CircuitBreakerPolicy::standard().open_timeout(Duration::ZERO),
+        ))
         .build();
 
     let error = match result {
@@ -2510,7 +2525,7 @@ fn blocking_build_rejects_invalid_circuit_breaker_policy() {
 fn blocking_build_rejects_invalid_rate_limit_policy() {
     support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
-        .per_host_rate_limit_policy(RateLimitPolicy::standard().burst(0))
+        .per_host_rate_limit_policy(Some(RateLimitPolicy::standard().burst(0)))
         .build();
 
     let error = match result {
@@ -2542,13 +2557,13 @@ fn blocking_circuit_breaker_short_circuits_after_opening() {
 
     let client = Client::builder(server.base_url.clone())
         .retry_policy(RetryPolicy::disabled())
-        .circuit_breaker_policy(
+        .circuit_breaker_policy(Some(
             CircuitBreakerPolicy::standard()
                 .failure_threshold(1)
                 .open_timeout(Duration::from_secs(30))
                 .half_open_max_requests(1)
                 .half_open_success_threshold(1),
-        )
+        ))
         .request_timeout(Duration::from_secs(1))
         .build()
         .expect("client should build");
@@ -2591,20 +2606,20 @@ fn blocking_circuit_breaker_stream_body_failure_opens_circuit() {
 
     let client = Client::builder(delayed_server.base_url.clone())
         .retry_policy(RetryPolicy::disabled())
-        .circuit_breaker_policy(
+        .circuit_breaker_policy(Some(
             CircuitBreakerPolicy::standard()
                 .failure_threshold(1)
                 .open_timeout(Duration::from_secs(30))
                 .half_open_max_requests(1)
                 .half_open_success_threshold(1),
-        )
+        ))
         .request_timeout(Duration::from_secs(1))
         .build()
         .expect("client should build");
 
     let stream = client
         .get("/v1/stream-open-circuit")
-        .timeout(Duration::from_millis(20))
+        .request_timeout(Duration::from_millis(20))
         .send_stream()
         .expect("stream request should return headers");
     let error = stream
@@ -2636,15 +2651,15 @@ fn blocking_circuit_breaker_does_not_open_on_local_host_limiter_timeout() {
 
     let client = Client::builder(server.base_url.clone())
         .retry_policy(RetryPolicy::disabled())
-        .circuit_breaker_policy(
+        .circuit_breaker_policy(Some(
             CircuitBreakerPolicy::standard()
                 .failure_threshold(1)
                 .open_timeout(Duration::from_secs(30))
                 .half_open_max_requests(1)
                 .half_open_success_threshold(1),
-        )
-        .max_in_flight_per_host(1)
-        .total_timeout(Duration::from_millis(80))
+        ))
+        .max_in_flight_per_host(Some(1))
+        .total_timeout(Some(Duration::from_millis(80)))
         .request_timeout(Duration::from_millis(400))
         .build()
         .expect("client should build");
@@ -2690,29 +2705,30 @@ fn blocking_circuit_breaker_open_state_bypasses_adaptive_queue_wait() {
 
     let client = Client::builder(held_server.base_url.clone())
         .retry_policy(RetryPolicy::disabled())
-        .circuit_breaker_policy(
+        .circuit_breaker_policy(Some(
             CircuitBreakerPolicy::standard()
                 .failure_threshold(1)
                 .open_timeout(Duration::from_secs(30))
                 .half_open_max_requests(1)
                 .half_open_success_threshold(1),
-        )
-        .adaptive_concurrency_policy(
+        ))
+        .adaptive_concurrency_policy(Some(
             AdaptiveConcurrencyPolicy::standard()
                 .min_limit(1)
                 .initial_limit(2)
                 .max_limit(2)
                 .decrease_ratio(0.5)
                 .high_latency_threshold(Duration::from_secs(30)),
-        )
-        .total_timeout(Duration::from_millis(250))
+        ))
+        .total_timeout(Some(Duration::from_millis(250)))
         .request_timeout(Duration::from_millis(800))
         .build()
         .expect("client should build");
 
     let held_stream = client
         .get("/v1/hold-adaptive-permit")
-        .send_response_stream()
+        .status_policy(StatusPolicy::Response)
+        .send_stream()
         .expect("first stream should hold an adaptive permit");
 
     let first_failure = client
@@ -2760,13 +2776,13 @@ fn blocking_circuit_breaker_error_mode_does_not_open_on_non_success_buffered() {
 
     let client = Client::builder(server.base_url.clone())
         .retry_policy(RetryPolicy::disabled())
-        .circuit_breaker_policy(
+        .circuit_breaker_policy(Some(
             CircuitBreakerPolicy::standard()
                 .failure_threshold(1)
                 .open_timeout(Duration::from_secs(30))
                 .half_open_max_requests(1)
                 .half_open_success_threshold(1),
-        )
+        ))
         .request_timeout(Duration::from_millis(400))
         .build()
         .expect("client should build");
@@ -2810,26 +2826,28 @@ fn blocking_circuit_breaker_response_mode_does_not_open_on_non_success_buffered(
 
     let client = Client::builder(server.base_url.clone())
         .retry_policy(RetryPolicy::disabled())
-        .circuit_breaker_policy(
+        .circuit_breaker_policy(Some(
             CircuitBreakerPolicy::standard()
                 .failure_threshold(1)
                 .open_timeout(Duration::from_secs(30))
                 .half_open_max_requests(1)
                 .half_open_success_threshold(1),
-        )
+        ))
         .request_timeout(Duration::from_millis(400))
         .build()
         .expect("client should build");
 
     let first = client
         .get("/v1/response-mode-buffered")
-        .send_response()
+        .status_policy(StatusPolicy::Response)
+        .send()
         .expect("first non-success response should be returned");
     assert_eq!(first.status(), http::StatusCode::NOT_FOUND);
 
     let second = client
         .get("/v1/response-mode-buffered")
-        .send_response()
+        .status_policy(StatusPolicy::Response)
+        .send()
         .expect("second non-success response should be returned");
     assert_eq!(second.status(), http::StatusCode::NOT_FOUND);
 
@@ -2847,26 +2865,28 @@ fn blocking_circuit_breaker_response_mode_opens_on_retryable_non_success_buffere
 
     let client = Client::builder(server.base_url.clone())
         .retry_policy(RetryPolicy::disabled())
-        .circuit_breaker_policy(
+        .circuit_breaker_policy(Some(
             CircuitBreakerPolicy::standard()
                 .failure_threshold(1)
                 .open_timeout(Duration::from_secs(30))
                 .half_open_max_requests(1)
                 .half_open_success_threshold(1),
-        )
+        ))
         .request_timeout(Duration::from_millis(400))
         .build()
         .expect("client should build");
 
     let first = client
         .get("/v1/response-mode-buffered-503")
-        .send_response()
+        .status_policy(StatusPolicy::Response)
+        .send()
         .expect("retryable non-success response should be returned");
     assert_eq!(first.status(), http::StatusCode::SERVICE_UNAVAILABLE);
 
     let second = client
         .get("/v1/response-mode-buffered-503")
-        .send_response()
+        .status_policy(StatusPolicy::Response)
+        .send()
         .expect_err("retryable non-success response should open circuit");
     match second {
         Error::CircuitOpen { .. } => {}
@@ -2894,26 +2914,28 @@ fn blocking_circuit_breaker_response_mode_does_not_open_on_non_success_stream() 
 
     let client = Client::builder(server.base_url.clone())
         .retry_policy(RetryPolicy::disabled())
-        .circuit_breaker_policy(
+        .circuit_breaker_policy(Some(
             CircuitBreakerPolicy::standard()
                 .failure_threshold(1)
                 .open_timeout(Duration::from_secs(30))
                 .half_open_max_requests(1)
                 .half_open_success_threshold(1),
-        )
+        ))
         .request_timeout(Duration::from_millis(400))
         .build()
         .expect("client should build");
 
     let first = client
         .get("/v1/response-mode-stream")
-        .send_response_stream()
+        .status_policy(StatusPolicy::Response)
+        .send_stream()
         .expect("first non-success stream should be returned");
     assert_eq!(first.status(), http::StatusCode::NOT_FOUND);
 
     let second = client
         .get("/v1/response-mode-stream")
-        .send_response_stream()
+        .status_policy(StatusPolicy::Response)
+        .send_stream()
         .expect("second non-success stream should be returned");
     assert_eq!(second.status(), http::StatusCode::NOT_FOUND);
 
@@ -2931,20 +2953,21 @@ fn blocking_circuit_breaker_response_mode_opens_on_retryable_non_success_stream(
 
     let client = Client::builder(server.base_url.clone())
         .retry_policy(RetryPolicy::disabled())
-        .circuit_breaker_policy(
+        .circuit_breaker_policy(Some(
             CircuitBreakerPolicy::standard()
                 .failure_threshold(1)
                 .open_timeout(Duration::from_secs(30))
                 .half_open_max_requests(1)
                 .half_open_success_threshold(1),
-        )
+        ))
         .request_timeout(Duration::from_millis(400))
         .build()
         .expect("client should build");
 
     let first = client
         .get("/v1/response-mode-stream-503")
-        .send_response_stream()
+        .status_policy(StatusPolicy::Response)
+        .send_stream()
         .expect("retryable non-success stream should be returned");
     assert_eq!(first.status(), http::StatusCode::SERVICE_UNAVAILABLE);
     let body = first
@@ -2954,7 +2977,8 @@ fn blocking_circuit_breaker_response_mode_opens_on_retryable_non_success_stream(
 
     let second = client
         .get("/v1/response-mode-stream-503")
-        .send_response_stream()
+        .status_policy(StatusPolicy::Response)
+        .send_stream()
         .expect_err("retryable non-success stream should open circuit");
     match second {
         Error::CircuitOpen { .. } => {}
@@ -2975,27 +2999,29 @@ fn blocking_circuit_breaker_response_mode_opens_on_dropped_retryable_non_success
 
     let client = Client::builder(server.base_url.clone())
         .retry_policy(RetryPolicy::disabled())
-        .circuit_breaker_policy(
+        .circuit_breaker_policy(Some(
             CircuitBreakerPolicy::standard()
                 .failure_threshold(1)
                 .open_timeout(Duration::from_secs(30))
                 .half_open_max_requests(1)
                 .half_open_success_threshold(1),
-        )
+        ))
         .request_timeout(Duration::from_millis(400))
         .build()
         .expect("client should build");
 
     let first = client
         .get("/v1/response-mode-stream-503-drop")
-        .send_response_stream()
+        .status_policy(StatusPolicy::Response)
+        .send_stream()
         .expect("retryable non-success stream should be returned");
     assert_eq!(first.status(), http::StatusCode::SERVICE_UNAVAILABLE);
     drop(first);
 
     let second = client
         .get("/v1/response-mode-stream-503-drop")
-        .send_response_stream()
+        .status_policy(StatusPolicy::Response)
+        .send_stream()
         .expect_err("dropped retryable non-success stream should open circuit");
     match second {
         Error::CircuitOpen { .. } => {}
@@ -3200,7 +3226,7 @@ fn blocking_send_stream_downloads_body_and_status() {
         .expect("stream request should succeed");
     assert_eq!(streamed.status().as_u16(), 200);
     assert_eq!(streamed.method().as_str(), "GET");
-    assert!(streamed.uri().contains("/v1/stream"));
+    assert!(streamed.uri_raw().contains("/v1/stream"));
 
     let body = streamed
         .into_bytes_limited(1024)
@@ -3229,10 +3255,6 @@ fn blocking_send_stream_uri_exposes_raw_and_redacted_variants() {
         .expect("stream request should succeed");
 
     assert_eq!(stream.status().as_u16(), 200);
-    assert!(stream.uri().contains("/v1/list?"));
-    assert!(stream.uri().contains("list-type=2"));
-    assert!(stream.uri().contains("uploads="));
-
     assert!(stream.uri_raw().contains("/v1/list?"));
     assert!(stream.uri_raw().contains("list-type=2"));
     assert!(stream.uri_raw().contains("uploads="));
@@ -3598,7 +3620,7 @@ fn blocking_buffered_response_body_timeout_maps_to_deadline_exceeded_when_total_
 
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_millis(400))
-        .total_timeout(Duration::from_millis(120))
+        .total_timeout(Some(Duration::from_millis(120)))
         .retry_policy(RetryPolicy::disabled())
         .build()
         .expect("client should build");
@@ -3611,71 +3633,6 @@ fn blocking_buffered_response_body_timeout_maps_to_deadline_exceeded_when_total_
         Error::DeadlineExceeded { method, uri, .. } => {
             assert_eq!(method.as_str(), "GET");
             assert!(uri.contains("/v1/slow-body-total-timeout"));
-        }
-        other => panic!("unexpected error variant: {other}"),
-    }
-}
-
-#[test]
-fn blocking_buffered_response_decode_honors_total_timeout_deadline() {
-    support::install_crypto_provider();
-    let server = MockServer::start(vec![MockResponse::new(
-        200,
-        vec![("Content-Type", "application/json")],
-        br#"{"ok":true}"#.to_vec(),
-    )]);
-
-    let client = Client::builder(server.base_url.clone())
-        .request_timeout(Duration::from_millis(500))
-        .total_timeout(Duration::from_millis(60))
-        .body_codec(SlowBodyCodec {
-            delay: Duration::from_millis(120),
-        })
-        .retry_policy(RetryPolicy::disabled())
-        .build()
-        .expect("client should build");
-
-    let error = client
-        .get("/v1/slow-buffered-decode")
-        .send()
-        .expect_err("slow buffered decode should honor total timeout");
-
-    match error {
-        Error::DeadlineExceeded { uri, .. } => {
-            assert!(uri.contains("/v1/slow-buffered-decode"));
-        }
-        other => panic!("unexpected error variant: {other}"),
-    }
-}
-
-#[test]
-fn blocking_custom_body_codec_cannot_bypass_response_body_limit() {
-    support::install_crypto_provider();
-    let server = MockServer::start(vec![MockResponse::new(
-        200,
-        vec![("Content-Type", "application/octet-stream")],
-        b"x".to_vec(),
-    )]);
-    let client = Client::builder(server.base_url.clone())
-        .max_response_body_bytes(4)
-        .body_codec(OversizedBodyCodec)
-        .retry_policy(RetryPolicy::disabled())
-        .build()
-        .expect("client should build");
-
-    let error = client
-        .get("/v1/oversized-custom-codec")
-        .send()
-        .expect_err("custom codec output should remain subject to the body limit");
-
-    match error {
-        Error::ResponseBodyTooLarge {
-            limit_bytes,
-            actual_bytes,
-            ..
-        } => {
-            assert_eq!(limit_bytes, 4);
-            assert_eq!(actual_bytes, 9);
         }
         other => panic!("unexpected error variant: {other}"),
     }
@@ -3696,7 +3653,7 @@ fn blocking_send_stream_respects_total_timeout_deadline() {
 
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_millis(400))
-        .total_timeout(Duration::from_millis(220))
+        .total_timeout(Some(Duration::from_millis(220)))
         .retry_policy(RetryPolicy::disabled())
         .build()
         .expect("client should build");
@@ -3727,9 +3684,9 @@ fn blocking_send_stream_total_deadline_uses_runtime_clock_not_control_clock() {
     )]);
 
     let client = Client::builder(server.base_url.clone())
-        .control_clock(FastForwardClock)
+        .control_clock(Arc::new(FastForwardClock))
         .request_timeout(Duration::from_millis(500))
-        .total_timeout(Duration::from_millis(500))
+        .total_timeout(Some(Duration::from_millis(500)))
         .retry_policy(RetryPolicy::disabled())
         .build()
         .expect("client should build");
@@ -3759,7 +3716,7 @@ fn blocking_send_stream_large_deadline_slack_does_not_shorten_total_timeout() {
 
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_millis(400))
-        .total_timeout(Duration::from_millis(250))
+        .total_timeout(Some(Duration::from_millis(250)))
         .stream_deadline_slack(Duration::from_secs(5))
         .retry_policy(RetryPolicy::disabled())
         .build()
@@ -3790,7 +3747,7 @@ fn blocking_send_stream_large_deadline_slack_does_not_reclassify_body_timeout() 
 
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_millis(100))
-        .total_timeout(Duration::from_millis(500))
+        .total_timeout(Some(Duration::from_millis(500)))
         .stream_deadline_slack(Duration::from_millis(450))
         .retry_policy(RetryPolicy::disabled())
         .build()
@@ -3824,7 +3781,7 @@ fn blocking_read_chunk_returns_deadline_exceeded_when_read_crosses_total_timeout
 
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_millis(400))
-        .total_timeout(Duration::from_millis(120))
+        .total_timeout(Some(Duration::from_millis(120)))
         .retry_policy(RetryPolicy::disabled())
         .metrics_enabled(true)
         .build()
@@ -4437,33 +4394,50 @@ fn blocking_redirect_after_303_treats_dropped_reader_body_as_replayable() {
     let server = MockServer::start(vec![
         MockResponse::new(303, vec![("Location", "/v1/middle")], b"redirect".to_vec()),
         MockResponse::new(307, vec![("Location", "/v1/final")], b"redirect".to_vec()),
+        MockResponse::new(503, vec![("Content-Type", "text/plain")], b"retry".to_vec()),
         MockResponse::new(200, vec![("Content-Type", "text/plain")], b"ok".to_vec()),
     ]);
 
     let client = Client::builder(server.base_url.clone())
+        .metrics_enabled(true)
         .request_timeout(Duration::from_secs(1))
-        .retry_policy(RetryPolicy::disabled())
+        .retry_policy(
+            RetryPolicy::standard()
+                .max_attempts(2)
+                .base_backoff(Duration::from_millis(1))
+                .max_backoff(Duration::from_millis(1))
+                .jitter_ratio(0.0),
+        )
         .redirect_policy(RedirectPolicy::limited(3))
         .build()
         .expect("client should build");
 
     let response = client
         .post("/v1/old")
-        .body_reader(Cursor::new(b"payload".to_vec()))
+        .body_reader_with_length(Cursor::new(b"payload".to_vec()), 7)
         .send()
-        .expect("redirect chain should keep following after 303 drops the body");
+        .expect("redirects and status retries should succeed after 303 drops the body");
     assert_eq!(response.status().as_u16(), 200);
     assert_eq!(response.text_lossy(), "ok");
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 4);
+    assert_eq!(requests[0].body, b"payload");
     assert_eq!(requests[0].method, "POST");
     assert_eq!(requests[1].method, "GET");
     assert_eq!(requests[2].method, "GET");
     assert_eq!(requests[1].path, "/v1/middle");
     assert_eq!(requests[2].path, "/v1/final");
-    assert!(requests[1].body.is_empty());
-    assert!(requests[2].body.is_empty());
+    assert_eq!(requests[3].method, "GET");
+    assert_eq!(requests[3].path, "/v1/final");
+    for request in &requests[1..] {
+        assert!(request.body.is_empty());
+        assert_ne!(
+            request.headers.get("content-length").map(String::as_str),
+            Some("7")
+        );
+    }
+    assert_eq!(client.metrics_snapshot().requests.retries, 1);
 }
 
 #[test]
@@ -4694,7 +4668,7 @@ fn blocking_absolute_request_uri_with_userinfo_is_rejected() {
 }
 
 #[test]
-fn blocking_redirect_policy_none_returns_301_without_following_with_send_response() {
+fn blocking_redirect_policy_none_returns_301_without_following_with_response_status_policy() {
     support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(301, vec![("Location", "/v1/new")], b"redirect".to_vec()),
@@ -4761,80 +4735,6 @@ fn blocking_redirect_policy_none_returns_http_status_error_without_following() {
 }
 
 #[test]
-fn blocking_proxy_authorization_requires_proxy_uri_credentials_for_http_proxy() {
-    support::install_crypto_provider();
-    let proxy_uri: Uri = "http://127.0.0.1:1".parse().expect("parse proxy uri");
-
-    let build_result = Client::builder("http://example.com")
-        .http_proxy(proxy_uri)
-        .try_proxy_authorization("Basic dXNlcjpwYXNz")
-        .expect("valid proxy authorization header")
-        .request_timeout(Duration::from_millis(500))
-        .retry_policy(RetryPolicy::disabled())
-        .build();
-    let error = match build_result {
-        Ok(_) => panic!("http proxy auth should fail at build time in blocking mode"),
-        Err(error) => error,
-    };
-
-    match error {
-        Error::InvalidProxyConfig { message, .. } => {
-            assert!(message.contains("proxy_authorization"));
-            assert!(message.contains("http_proxy URI"));
-        }
-        other => panic!("unexpected error: {other}"),
-    }
-}
-
-#[test]
-fn blocking_proxy_authorization_is_rejected_even_when_proxy_uri_has_credentials() {
-    support::install_crypto_provider();
-    let proxy_uri: Uri = "http://user:pass@127.0.0.1:1"
-        .parse()
-        .expect("parse proxy uri");
-
-    let build_result = Client::builder("http://example.com")
-        .http_proxy(proxy_uri)
-        .try_proxy_authorization("Basic Zm9vOmJhcg==")
-        .expect("valid proxy authorization header")
-        .request_timeout(Duration::from_millis(500))
-        .retry_policy(RetryPolicy::disabled())
-        .build();
-    let error = match build_result {
-        Ok(_) => panic!("blocking proxy authorization override should fail at build time"),
-        Err(error) => error,
-    };
-
-    match error {
-        Error::InvalidProxyConfig { message, .. } => {
-            assert!(message.contains("proxy_authorization"));
-            assert!(message.contains("http_proxy URI"));
-        }
-        other => panic!("unexpected error: {other}"),
-    }
-}
-
-#[test]
-fn blocking_proxy_authorization_without_http_proxy_is_rejected_at_build() {
-    support::install_crypto_provider();
-    let build_result = Client::builder("http://example.com")
-        .try_proxy_authorization("Basic dXNlcjpwYXNz")
-        .expect("valid proxy authorization header")
-        .request_timeout(Duration::from_millis(500))
-        .retry_policy(RetryPolicy::disabled())
-        .build();
-    let error = match build_result {
-        Ok(_) => panic!("proxy authorization without http_proxy should fail at build time"),
-        Err(error) => error,
-    };
-
-    match error {
-        Error::ProxyAuthorizationRequiresHttpProxy => {}
-        other => panic!("unexpected error: {other}"),
-    }
-}
-
-#[test]
 fn blocking_no_proxy_bypasses_http_proxy() {
     support::install_crypto_provider();
     let upstream = MockServer::start(vec![MockResponse::new(
@@ -4855,6 +4755,7 @@ fn blocking_no_proxy_bypasses_http_proxy() {
     let client = Client::builder(upstream.base_url.clone())
         .http_proxy(proxy_uri)
         .no_proxy(["127.0.0.1"])
+        .expect("valid no_proxy rules")
         .request_timeout(Duration::from_millis(500))
         .retry_policy(RetryPolicy::disabled())
         .build()
@@ -4872,29 +4773,17 @@ fn blocking_no_proxy_bypasses_http_proxy() {
 }
 
 #[test]
-fn blocking_https_proxy_authorization_requires_proxy_uri_credentials() {
+fn blocking_proxy_uri_credentials_are_accepted() {
     support::install_crypto_provider();
-    let proxy_uri: Uri = "http://127.0.0.1:1".parse().expect("parse proxy uri");
-
-    let build_result = Client::builder("https://example.com")
-        .http_proxy(proxy_uri)
-        .try_proxy_authorization("Basic dXNlcjpwYXNz")
-        .expect("valid proxy authorization header")
-        .request_timeout(Duration::from_millis(500))
-        .retry_policy(RetryPolicy::disabled())
-        .build();
-    let error = match build_result {
-        Ok(_) => panic!("https proxy auth should fail at build time in blocking mode"),
-        Err(error) => error,
-    };
-
-    match error {
-        Error::InvalidProxyConfig { message, .. } => {
-            assert!(message.contains("proxy_authorization"));
-            assert!(message.contains("http_proxy URI"));
-        }
-        other => panic!("unexpected error: {other}"),
-    }
+    let proxy_uri: Uri = "http://user:pass@127.0.0.1:1"
+        .parse()
+        .expect("parse proxy uri");
+    assert!(
+        Client::builder("https://example.com")
+            .http_proxy(proxy_uri)
+            .build()
+            .is_ok()
+    );
 }
 
 struct BlockingHeaderInterceptor {
@@ -4951,7 +4840,7 @@ fn blocking_interceptor_cannot_leave_post_retryable_after_removing_idempotency_k
                 .max_backoff(Duration::from_millis(1))
                 .jitter_ratio(0.0),
         )
-        .interceptor(BlockingIdempotencyKeyRemovingInterceptor)
+        .interceptor(Arc::new(BlockingIdempotencyKeyRemovingInterceptor))
         .build()
         .expect("client should build");
 
@@ -4992,7 +4881,7 @@ fn blocking_interceptor_can_mutate_headers_and_observe_lifecycle() {
 
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_secs(1))
-        .interceptor_arc(interceptor)
+        .interceptor(interceptor)
         .build()
         .expect("client should build");
 
@@ -5035,7 +4924,7 @@ fn blocking_interceptor_observes_response_before_decode_failure() {
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_secs(1))
         .retry_policy(RetryPolicy::disabled())
-        .interceptor_arc(interceptor)
+        .interceptor(interceptor)
         .build()
         .expect("client should build");
 
@@ -5075,9 +4964,21 @@ fn query_helpers_preserve_existing_wire_encoding() {
         client
             .get(&target)
             .query_pair("next", "a b+c")
+            .query_pairs([("dup", "one"), ("empty", "")])
+            .query(&[("dup", "two"), ("unicode", "中文"), ("symbol", "&=?#%")])
+            .expect("query serialization")
+            .query_pairs(std::iter::empty::<(&str, &str)>())
+            .query(&[] as &[(&str, &str)])
+            .expect("empty query serialization")
+            .query_pair("dup", "three")
             .send()
             .expect("request");
-        assert_eq!(server.requests()[0].path, format!("{path}&next=a+b%2Bc"));
+        assert_eq!(
+            server.requests()[0].path,
+            format!(
+                "{path}&next=a+b%2Bc&dup=one&empty=&dup=two&unicode=%E4%B8%AD%E6%96%87&symbol=%26%3D%3F%23%25&dup=three"
+            )
+        );
     }
 }
 
@@ -5105,4 +5006,158 @@ fn range_requests_do_not_negotiate_compression() {
         Some("bytes=10-20")
     );
     assert!(!requests[0].headers.contains_key("accept-encoding"));
+}
+
+#[test]
+fn blocking_response_hooks_run_once_per_attempt_in_each_response_mode() {
+    support::install_crypto_provider();
+    for streamed in [false, true] {
+        for return_status in [false, true] {
+            for (status, retry) in [(200, false), (404, false), (429, false), (429, true)] {
+                let mut responses = vec![MockResponse::new(
+                    status,
+                    vec![("Retry-After", "0")],
+                    b"payload".to_vec(),
+                )];
+                if retry {
+                    responses.push(MockResponse::new(
+                        200,
+                        vec![("Content-Type", "text/plain")],
+                        b"payload".to_vec(),
+                    ));
+                }
+                let server = MockServer::start(responses);
+                let request_hits = Arc::new(AtomicUsize::new(0));
+                let response_hits = Arc::new(AtomicUsize::new(0));
+                let error_hits = Arc::new(AtomicUsize::new(0));
+                let throttle_scopes = Arc::new(Mutex::new(Vec::new()));
+                let client = Client::builder(&server.base_url)
+                    .retry_policy(
+                        RetryPolicy::standard()
+                            .max_attempts(if retry { 2 } else { 1 })
+                            .base_backoff(Duration::from_millis(1))
+                            .max_backoff(Duration::from_millis(1))
+                            .jitter_ratio(0.0),
+                    )
+                    .interceptor(Arc::new(BlockingHeaderInterceptor {
+                        request_hits: request_hits.clone(),
+                        response_hits: response_hits.clone(),
+                        error_hits: error_hits.clone(),
+                    }))
+                    .observer(Arc::new(ThrottleObserver {
+                        scopes: throttle_scopes.clone(),
+                    }))
+                    .default_status_policy(if return_status {
+                        StatusPolicy::Response
+                    } else {
+                        StatusPolicy::Error
+                    })
+                    .build()
+                    .expect("client should build");
+                let result = if streamed {
+                    match client.get("/").send_stream() {
+                        Ok(stream) => {
+                            let status = stream.status().as_u16();
+                            stream.into_bytes_limited(32).map(|body| (status, body))
+                        }
+                        Err(error) => Err(error),
+                    }
+                } else {
+                    client
+                        .get("/")
+                        .send()
+                        .map(|response| (response.status().as_u16(), response.body().clone()))
+                };
+                let expected_status = if retry { 200 } else { status };
+                let rejected = expected_status != 200 && !return_status;
+                if rejected {
+                    assert!(
+                        matches!(result, Err(Error::HttpStatus { status, .. }) if status == expected_status)
+                    );
+                } else {
+                    let (actual_status, body) = result.expect("response should be returned");
+                    assert_eq!(actual_status, expected_status);
+                    assert_eq!(body.as_ref(), b"payload");
+                }
+                let attempts = if retry { 2 } else { 1 };
+                assert_eq!(server.served_count(), attempts);
+                assert_eq!(request_hits.load(Ordering::SeqCst), attempts);
+                assert_eq!(response_hits.load(Ordering::SeqCst), attempts);
+                assert_eq!(error_hits.load(Ordering::SeqCst), usize::from(rejected));
+                assert_eq!(
+                    throttle_scopes.lock().expect("throttle scopes").len(),
+                    usize::from(status == 429)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn configured_controls_can_be_disabled_before_building_client() {
+    support::install_crypto_provider();
+    let server = MockServer::start(vec![
+        MockResponse::new(503, vec![("Content-Type", "text/plain")], b"retry".to_vec()),
+        MockResponse::new(200, vec![("Content-Type", "text/plain")], b"ok".to_vec()),
+    ]);
+    let client = support::configure_then_disable_controls(Client::builder(server.base_url.clone()))
+        .total_timeout(Some(Duration::from_millis(500)))
+        .retry_policy(
+            RetryPolicy::standard()
+                .max_attempts(2)
+                .base_backoff(Duration::from_millis(1))
+                .jitter_ratio(0.0),
+        )
+        .metrics_enabled(true)
+        .build()
+        .expect("client without controls should build");
+
+    let response = client
+        .get("/disabled-controls")
+        .send()
+        .expect("disabled controls must allow the retry");
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(server.requests().len(), 2);
+    assert_eq!(client.metrics_snapshot().requests.retries, 1);
+}
+
+#[cfg(feature = "compression-gzip")]
+#[test]
+fn buffered_and_streamed_responses_share_bounded_content_decoding() {
+    support::install_crypto_provider();
+    let expanded = vec![b'x'; 2048];
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(&expanded).expect("gzip source");
+    let encoded = encoder.finish().expect("gzip body");
+    assert!(encoded.len() < 128);
+    let response = MockResponse::new(200, vec![("Content-Encoding", "gzip")], encoded);
+    let server = MockServer::start(vec![response; 4]);
+    for limit in [128, 4096] {
+        let client = Client::builder(server.base_url.clone())
+            .max_response_body_bytes(limit)
+            .retry_policy(RetryPolicy::disabled())
+            .build()
+            .expect("client should build");
+        for streamed in [false, true] {
+            let result = if streamed {
+                client
+                    .get("/content-decoding")
+                    .send_stream()
+                    .expect("stream headers")
+                    .into_response_limited(limit)
+            } else {
+                client.get("/content-decoding").send()
+            };
+            if limit < expanded.len() {
+                assert!(
+                    matches!(result, Err(Error::ResponseBodyTooLarge { limit_bytes, .. }) if limit_bytes == limit)
+                );
+            } else {
+                let response = result.expect("decoded response");
+                assert_eq!(response.body().as_ref(), expanded.as_slice());
+                assert!(!response.headers().contains_key("content-encoding"));
+                assert!(!response.headers().contains_key("content-length"));
+            }
+        }
+    }
 }

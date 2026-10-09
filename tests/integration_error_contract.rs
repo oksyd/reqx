@@ -422,7 +422,7 @@ fn blocking_http_status_error_carries_response_headers() {
 
 #[cfg(feature = "_async")]
 #[tokio::test(flavor = "current_thread")]
-async fn async_send_response_returns_response_for_non_success() {
+async fn async_response_status_policy_returns_response_for_non_success() {
     support::install_crypto_provider();
     use reqx::prelude::{Client, RetryPolicy};
 
@@ -439,7 +439,8 @@ async fn async_send_response_returns_response_for_non_success() {
 
     let response = client
         .get("/case")
-        .send_response()
+        .status_policy(StatusPolicy::Response)
+        .send()
         .await
         .expect("non-success should be returned as response");
     assert_eq!(response.status().as_u16(), 503);
@@ -473,7 +474,7 @@ async fn async_client_default_status_policy_response_returns_non_success() {
 
 #[cfg(feature = "_blocking")]
 #[test]
-fn blocking_send_response_returns_response_for_non_success() {
+fn blocking_response_status_policy_returns_response_for_non_success() {
     support::install_crypto_provider();
     use reqx::blocking::Client;
     use reqx::prelude::RetryPolicy;
@@ -491,7 +492,8 @@ fn blocking_send_response_returns_response_for_non_success() {
 
     let response = client
         .get("/case")
-        .send_response()
+        .status_policy(StatusPolicy::Response)
+        .send()
         .expect("non-success should be returned as response");
     assert_eq!(response.status().as_u16(), 503);
     assert_eq!(response.text_lossy(), "unavailable");
@@ -524,7 +526,7 @@ fn blocking_client_default_status_policy_response_returns_non_success() {
 
 #[cfg(feature = "_async")]
 #[tokio::test(flavor = "current_thread")]
-async fn async_send_response_stream_returns_stream_for_non_success() {
+async fn async_response_status_policy_stream_returns_stream_for_non_success() {
     support::install_crypto_provider();
     use reqx::prelude::{Client, RetryPolicy};
 
@@ -541,7 +543,8 @@ async fn async_send_response_stream_returns_stream_for_non_success() {
 
     let stream = client
         .get("/case")
-        .send_response_stream()
+        .status_policy(StatusPolicy::Response)
+        .send_stream()
         .await
         .expect("non-success should be returned as stream");
     assert_eq!(stream.status().as_u16(), 503);
@@ -565,9 +568,10 @@ async fn async_endpoint_selector_can_override_base_url() {
         vec![("content-type".to_owned(), "text/plain".to_owned())],
         b"ok".to_vec(),
     );
-    let selector = RoundRobinEndpointSelector::new([server.base_url.clone()]);
+    let selector =
+        RoundRobinEndpointSelector::new([server.base_url.clone()]).expect("valid endpoints");
     let client = Client::builder("http://invalid.local")
-        .endpoint_selector(selector)
+        .endpoint_selector(Some(Arc::new(selector)))
         .build()
         .expect("client should build");
 
@@ -599,7 +603,7 @@ async fn async_observer_receives_request_start_event() {
     };
     let client = Client::builder(server.base_url.clone())
         .retry_policy(RetryPolicy::disabled())
-        .observer(observer)
+        .observer(Arc::new(observer))
         .build()
         .expect("client should build");
 
@@ -615,7 +619,7 @@ async fn async_observer_receives_request_start_event() {
 
 #[cfg(feature = "_blocking")]
 #[test]
-fn blocking_send_response_stream_returns_stream_for_non_success() {
+fn blocking_response_status_policy_stream_returns_stream_for_non_success() {
     support::install_crypto_provider();
     use reqx::blocking::Client;
     use reqx::prelude::RetryPolicy;
@@ -633,7 +637,8 @@ fn blocking_send_response_stream_returns_stream_for_non_success() {
 
     let stream = client
         .get("/case")
-        .send_response_stream()
+        .status_policy(StatusPolicy::Response)
+        .send_stream()
         .expect("non-success should be returned as stream");
     assert_eq!(stream.status().as_u16(), 503);
     let response = stream
@@ -655,9 +660,10 @@ fn blocking_endpoint_selector_can_override_base_url() {
         vec![("content-type".to_owned(), "text/plain".to_owned())],
         b"ok".to_vec(),
     );
-    let selector = RoundRobinEndpointSelector::new([server.base_url.clone()]);
+    let selector =
+        RoundRobinEndpointSelector::new([server.base_url.clone()]).expect("valid endpoints");
     let client = Client::builder("http://invalid.local")
-        .endpoint_selector(selector)
+        .endpoint_selector(Some(Arc::new(selector)))
         .build()
         .expect("client should build");
 
@@ -689,7 +695,7 @@ fn blocking_observer_receives_request_start_event() {
     };
     let client = Client::builder(server.base_url.clone())
         .retry_policy(RetryPolicy::disabled())
-        .observer(observer)
+        .observer(Arc::new(observer))
         .build()
         .expect("client should build");
 

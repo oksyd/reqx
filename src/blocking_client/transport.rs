@@ -20,45 +20,20 @@ use crate::tls::{
     tls_config_error, tls_version_bounds,
 };
 
-#[cfg(feature = "blocking-tls-rustls-ring")]
-const DEFAULT_TLS_BACKEND: TlsBackend = TlsBackend::RustlsRing;
-#[cfg(all(
-    not(feature = "blocking-tls-rustls-ring"),
-    feature = "blocking-tls-rustls-aws-lc-rs"
-))]
-const DEFAULT_TLS_BACKEND: TlsBackend = TlsBackend::RustlsAwsLcRs;
-#[cfg(all(
-    not(feature = "blocking-tls-rustls-ring"),
-    not(feature = "blocking-tls-rustls-aws-lc-rs"),
-    feature = "blocking-tls-native"
-))]
-const DEFAULT_TLS_BACKEND: TlsBackend = TlsBackend::NativeTls;
-#[cfg(all(
-    not(feature = "blocking-tls-rustls-ring"),
-    not(feature = "blocking-tls-rustls-aws-lc-rs"),
-    not(feature = "blocking-tls-native"),
-    not(feature = "blocking-tls-rustls-graviola"),
-    feature = "blocking-tls-rustls-no-provider"
-))]
-const DEFAULT_TLS_BACKEND: TlsBackend = TlsBackend::RustlsNoProvider;
-#[cfg(all(
-    not(feature = "blocking-tls-rustls-ring"),
-    not(feature = "blocking-tls-rustls-aws-lc-rs"),
-    not(feature = "blocking-tls-native"),
-    feature = "blocking-tls-rustls-graviola"
-))]
-const DEFAULT_TLS_BACKEND: TlsBackend = TlsBackend::RustlsGraviola;
-#[cfg(not(any(
-    feature = "blocking-tls-rustls-ring",
-    feature = "blocking-tls-rustls-aws-lc-rs",
-    feature = "blocking-tls-rustls-graviola",
-    feature = "blocking-tls-rustls-no-provider",
-    feature = "blocking-tls-native"
-)))]
-const DEFAULT_TLS_BACKEND: TlsBackend = TlsBackend::RustlsRing;
-
 pub(super) fn default_tls_backend() -> TlsBackend {
-    DEFAULT_TLS_BACKEND
+    if cfg!(feature = "blocking-tls-rustls-ring") {
+        TlsBackend::RustlsRing
+    } else if cfg!(feature = "blocking-tls-rustls-aws-lc-rs") {
+        TlsBackend::RustlsAwsLcRs
+    } else if cfg!(feature = "blocking-tls-native") {
+        TlsBackend::NativeTls
+    } else if cfg!(feature = "blocking-tls-rustls-graviola") {
+        TlsBackend::RustlsGraviola
+    } else if cfg!(feature = "blocking-tls-rustls-no-provider") {
+        TlsBackend::RustlsNoProvider
+    } else {
+        TlsBackend::RustlsRing
+    }
 }
 
 pub(super) fn backend_is_available(backend: TlsBackend) -> bool {
@@ -391,6 +366,7 @@ fn build_sync_tls_config(
                     })?;
                 ureq::tls::ClientCert::new_with_certs(&cert_chain, private_key)
             }
+            #[cfg(any(test, feature = "_async"))]
             TlsClientIdentity::Pkcs12 {
                 identity_der,
                 password,
@@ -414,9 +390,22 @@ fn build_sync_tls_config(
         feature = "blocking-tls-rustls-graviola",
         feature = "blocking-tls-rustls-no-provider"
     ))]
-    {
-        tls_config_builder =
-            super::ureq_compat::pin_rustls_crypto_provider(tls_config_builder, backend)?;
+    if backend != TlsBackend::NativeTls {
+        let provider = crate::tls::rustls_crypto_provider(backend)?;
+
+        #[cfg(feature = "blocking-tls-rustls-no-provider")]
+        if backend == TlsBackend::RustlsNoProvider {
+            // ureq creates its rustls config lazily. Validate caller-supplied
+            // providers here so unsupported settings fail during Client::build().
+            rustls::ClientConfig::builder_with_provider(provider.clone())
+                .with_protocol_versions(rustls::ALL_VERSIONS)
+                .map_err(|error| crate::Error::TlsBackendInit {
+                    backend: backend.as_str(),
+                    message: error.to_string(),
+                })?;
+        }
+
+        tls_config_builder = tls_config_builder.unversioned_rustls_crypto_provider(provider);
     }
 
     Ok(tls_config_builder.build())
@@ -429,29 +418,43 @@ fn build_sync_tls_config(
     feature = "blocking-tls-rustls-no-provider",
     feature = "blocking-tls-native"
 ))]
-pub(super) fn make_agent_config(
+pub(super) fn make_agent_configs(
     tls_backend: TlsBackend,
     tls_options: &TlsOptions,
     client_name: &str,
     pool_idle_timeout: Duration,
     pool_max_idle_per_host: usize,
     pool_max_idle_connections: usize,
-    proxy: Option<ureq::Proxy>,
-) -> crate::Result<ureq::config::Config> {
+    proxy_uri: Option<&Uri>,
+) -> crate::Result<(ureq::config::Config, Option<ureq::config::Config>)> {
     let tls_config = build_sync_tls_config(tls_backend, tls_options)?;
-    let config = ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        // reqx owns redirect semantics; keep ureq from auto-following 3xx.
-        .max_redirects(0)
-        .max_redirects_will_error(false)
-        .user_agent(client_name)
-        .max_idle_age(pool_idle_timeout)
-        .max_idle_connections_per_host(pool_max_idle_per_host)
-        .max_idle_connections(pool_max_idle_connections)
-        .tls_config(tls_config)
-        .proxy(proxy)
-        .build();
-    Ok(config)
+    let make_config = |proxy| {
+        ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            // reqx owns redirect semantics; keep ureq from auto-following 3xx.
+            .max_redirects(0)
+            .max_redirects_will_error(false)
+            .user_agent(client_name)
+            .max_idle_age(pool_idle_timeout)
+            .max_idle_connections_per_host(pool_max_idle_per_host)
+            .max_idle_connections(pool_max_idle_connections)
+            .tls_config(tls_config.clone())
+            .proxy(proxy)
+            .build()
+    };
+    let direct = make_config(None);
+    let proxy = proxy_uri
+        .map(|uri| {
+            let proxy = ureq::Proxy::new(&uri.to_string()).map_err(|_| {
+                crate::core::error::Error::InvalidProxyConfig {
+                    proxy_uri: crate::core::util::redact_uri_for_logs(&uri.to_string()),
+                    message: "failed to initialize blocking proxy from http_proxy URI".to_owned(),
+                }
+            })?;
+            Ok(make_config(Some(proxy)))
+        })
+        .transpose()?;
+    Ok((direct, proxy))
 }
 
 #[cfg(not(any(
@@ -461,21 +464,20 @@ pub(super) fn make_agent_config(
     feature = "blocking-tls-rustls-no-provider",
     feature = "blocking-tls-native"
 )))]
-pub(super) fn make_agent_config(
+pub(super) fn make_agent_configs(
     tls_backend: TlsBackend,
     _tls_options: &TlsOptions,
     _client_name: &str,
     _pool_idle_timeout: Duration,
     _pool_max_idle_per_host: usize,
     _pool_max_idle_connections: usize,
-    _proxy: Option<ureq::Proxy>,
-) -> crate::Result<ureq::config::Config> {
+    _proxy_uri: Option<&Uri>,
+) -> crate::Result<(ureq::config::Config, Option<ureq::config::Config>)> {
     Err(crate::core::error::Error::TlsBackendUnavailable {
         backend: tls_backend.as_str(),
     })
 }
 
-#[derive(Clone)]
 pub(super) struct TransportAgents {
     pub(super) direct: ureq::Agent,
     pub(super) proxy: Option<ureq::Agent>,
@@ -686,7 +688,9 @@ mod rustls_tls_config_tests {
         crate::test_support::install_crypto_provider();
         let config = build_sync_tls_config(TlsBackend::RustlsNoProvider, &TlsOptions::default())
             .expect("custom provider TLS config");
-        let configured = super::super::ureq_compat::configured_rustls_crypto_provider(&config)
+        let configured = config
+            .unversioned_rustls_crypto_provider()
+            .as_deref()
             .expect("explicit provider on ureq config");
         let installed = rustls::crypto::CryptoProvider::get_default().expect("installed provider");
         assert!(std::ptr::eq(configured, installed.as_ref()));
@@ -698,7 +702,9 @@ mod rustls_tls_config_tests {
         let backend = test_tls_backend();
         let config = build_sync_tls_config(backend, &TlsOptions::default())
             .expect("rustls TLS config should build");
-        let configured = super::super::ureq_compat::configured_rustls_crypto_provider(&config)
+        let configured = config
+            .unversioned_rustls_crypto_provider()
+            .as_deref()
             .expect("rustls backend should pin its crypto provider");
 
         #[cfg(feature = "blocking-tls-rustls-ring")]

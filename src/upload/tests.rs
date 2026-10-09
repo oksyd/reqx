@@ -1,15 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 use std::pin::Pin;
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 use std::task::{Context, Poll};
 
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 use super::session::read_chunk_async;
 use super::session::{ResumableUploadSession, UploadChunkAction, read_chunk};
 use super::*;
@@ -233,14 +233,16 @@ impl Read for FailingReader {
 struct InterruptedOnceReader {
     data: Vec<u8>,
     offset: usize,
+    interrupt_at: usize,
     interrupted: bool,
 }
 
 impl InterruptedOnceReader {
-    fn new(data: &[u8]) -> Self {
+    fn new(data: &[u8], interrupt_at: usize) -> Self {
         Self {
             data: data.to_vec(),
             offset: 0,
+            interrupt_at,
             interrupted: false,
         }
     }
@@ -248,7 +250,7 @@ impl InterruptedOnceReader {
 
 impl Read for InterruptedOnceReader {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        if !self.interrupted {
+        if !self.interrupted && self.offset >= self.interrupt_at {
             self.interrupted = true;
             return Err(std::io::ErrorKind::Interrupted.into());
         }
@@ -256,32 +258,37 @@ impl Read for InterruptedOnceReader {
             return Ok(0);
         }
 
-        let read = buffer.len().min(self.data.len() - self.offset);
+        let mut read = buffer.len().min(self.data.len() - self.offset);
+        if !self.interrupted {
+            read = read.min(self.interrupt_at - self.offset);
+        }
         buffer[..read].copy_from_slice(&self.data[self.offset..self.offset + read]);
         self.offset += read;
         Ok(read)
     }
 }
 
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 struct AsyncInterruptedOnceReader {
     data: Vec<u8>,
     offset: usize,
+    interrupt_at: usize,
     interrupted: bool,
 }
 
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 impl AsyncInterruptedOnceReader {
-    fn new(data: &[u8]) -> Self {
+    fn new(data: &[u8], interrupt_at: usize) -> Self {
         Self {
             data: data.to_vec(),
             offset: 0,
+            interrupt_at,
             interrupted: false,
         }
     }
 }
 
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 impl tokio::io::AsyncRead for AsyncInterruptedOnceReader {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -289,7 +296,7 @@ impl tokio::io::AsyncRead for AsyncInterruptedOnceReader {
         buffer: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
         let reader = self.get_mut();
-        if !reader.interrupted {
+        if !reader.interrupted && reader.offset >= reader.interrupt_at {
             reader.interrupted = true;
             return Poll::Ready(Err(std::io::ErrorKind::Interrupted.into()));
         }
@@ -297,7 +304,10 @@ impl tokio::io::AsyncRead for AsyncInterruptedOnceReader {
             return Poll::Ready(Ok(()));
         }
 
-        let read = buffer.remaining().min(reader.data.len() - reader.offset);
+        let mut read = buffer.remaining().min(reader.data.len() - reader.offset);
+        if !reader.interrupted {
+            read = read.min(reader.interrupt_at - reader.offset);
+        }
         buffer.put_slice(&reader.data[reader.offset..reader.offset + read]);
         reader.offset += read;
         Poll::Ready(Ok(()))
@@ -306,56 +316,68 @@ impl tokio::io::AsyncRead for AsyncInterruptedOnceReader {
 
 #[test]
 fn read_chunk_retries_interrupted_reads() {
-    let mut reader = InterruptedOnceReader::new(b"abcdef");
-
-    let first = read_chunk(&mut reader, 4).expect("interrupted read should be retried");
-    let second = read_chunk(&mut reader, 4).expect("remaining bytes should be readable");
-
-    assert_eq!(first, b"abcd");
-    assert_eq!(second, b"ef");
+    for interrupt_at in [0, 2] {
+        let mut reader = InterruptedOnceReader::new(b"abcdef", interrupt_at);
+        let first = read_chunk(&mut reader, 4).expect("interrupted read should be retried");
+        let second = read_chunk(&mut reader, 4).expect("remaining bytes should be readable");
+        assert_eq!(first, b"abcd");
+        assert_eq!(second, b"ef");
+    }
 }
 
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 #[tokio::test]
 async fn read_chunk_async_retries_interrupted_reads() {
-    let mut reader = AsyncInterruptedOnceReader::new(b"abcdef");
-
-    let first = read_chunk_async(&mut reader, 4)
-        .await
-        .expect("interrupted read should be retried");
-    let second = read_chunk_async(&mut reader, 4)
-        .await
-        .expect("remaining bytes should be readable");
-
-    assert_eq!(first, b"abcd");
-    assert_eq!(second, b"ef");
+    for interrupt_at in [0, 2] {
+        let mut reader = AsyncInterruptedOnceReader::new(b"abcdef", interrupt_at);
+        let first = read_chunk_async(&mut reader, 4)
+            .await
+            .expect("interrupted read should be retried");
+        let second = read_chunk_async(&mut reader, 4)
+            .await
+            .expect("remaining bytes should be readable");
+        assert_eq!(first, b"abcd");
+        assert_eq!(second, b"ef");
+    }
 }
 
 #[test]
-fn checkpoint_deserializes_legacy_payload_without_version() {
+fn checkpoint_requires_explicit_schema_version() {
     let payload = r#"{
-            "upload_id":"upload-legacy",
+            "upload_id":"upload-1",
             "part_size":4,
             "completed_parts":{
                 "1":{"part_number":1,"etag":"etag-1","size":4}
             }
         }"#;
 
-    let checkpoint: ResumableUploadCheckpoint =
-        serde_json::from_str(payload).expect("legacy checkpoint should deserialize");
+    let error = serde_json::from_str::<ResumableUploadCheckpoint>(payload)
+        .expect_err("a checkpoint without a version must be rejected");
+    assert!(error.to_string().contains("missing field `version`"));
+}
 
-    assert_eq!(
-        checkpoint.version,
-        LEGACY_RESUMABLE_UPLOAD_CHECKPOINT_VERSION
-    );
-    assert_eq!(checkpoint.checksum_algorithm, None);
-    assert_eq!(
-        checkpoint
-            .completed_parts
-            .get(&1)
-            .and_then(|item| item.checksum.as_deref()),
-        None
-    );
+#[test]
+fn upload_session_rejects_noncurrent_checkpoint_versions() {
+    let options = ResumableUploadOptions::new().with_part_size(4);
+    for version in [0, 1, RESUMABLE_UPLOAD_CHECKPOINT_VERSION + 1, u32::MAX] {
+        let mut checkpoint = ResumableUploadCheckpoint::new("upload-1", 4);
+        checkpoint.version = version;
+
+        let error = match ResumableUploadSession::new::<MockError>(&options, checkpoint, true) {
+            Ok(_) => panic!("unsupported checkpoint version {version} was accepted"),
+            Err(error) => error,
+        };
+        match error {
+            ResumableUploadError::UnsupportedCheckpointVersion {
+                checkpoint_version,
+                supported_version,
+            } => {
+                assert_eq!(checkpoint_version, version);
+                assert_eq!(supported_version, RESUMABLE_UPLOAD_CHECKPOINT_VERSION);
+            }
+            other => panic!("unexpected error variant: {other}"),
+        }
+    }
 }
 
 #[test]
@@ -523,10 +545,10 @@ fn upload_session_rejects_backend_part_size_mismatch() {
 #[test]
 fn blocking_resume_skips_already_completed_parts() {
     let backend = BlockingMockBackend::default();
-    let uploader = BlockingResumableUploader::new(
+    let uploader = ResumableUploader::new(
         ResumableUploadOptions::new()
             .with_part_size(4)
-            .with_part_checksum_algorithm(PartChecksumAlgorithm::Md5)
+            .with_part_checksum_algorithm(Some(PartChecksumAlgorithm::Md5))
             .with_max_attempts(1)
             .with_jitter_ratio(0.0),
     );
@@ -545,7 +567,7 @@ fn blocking_resume_skips_already_completed_parts() {
 
     let mut reader = std::io::Cursor::new(b"abcdefgh".to_vec());
     let result = uploader
-        .resume(&backend, &mut reader, checkpoint)
+        .resume_blocking(&backend, &mut reader, checkpoint)
         .expect("resume should succeed");
 
     assert!(result.resumed);
@@ -574,10 +596,10 @@ fn blocking_resume_skips_already_completed_parts() {
 #[test]
 fn blocking_resume_reuploads_checkpoint_part_when_verified_etag_mismatches() {
     let backend = BlockingMockBackend::default();
-    let uploader = BlockingResumableUploader::new(
+    let uploader = ResumableUploader::new(
         ResumableUploadOptions::new()
             .with_part_size(4)
-            .with_part_checksum_algorithm(PartChecksumAlgorithm::Md5)
+            .with_part_checksum_algorithm(Some(PartChecksumAlgorithm::Md5))
             .with_verify_remote_etag(true)
             .with_max_attempts(1)
             .with_jitter_ratio(0.0),
@@ -597,7 +619,7 @@ fn blocking_resume_reuploads_checkpoint_part_when_verified_etag_mismatches() {
 
     let mut reader = std::io::Cursor::new(b"abcdefgh".to_vec());
     let result = uploader
-        .resume(&backend, &mut reader, checkpoint)
+        .resume_blocking(&backend, &mut reader, checkpoint)
         .expect("resume should repair stale checkpoint etag");
 
     assert!(result.resumed);
@@ -611,10 +633,10 @@ fn blocking_resume_reuploads_checkpoint_part_when_verified_etag_mismatches() {
 fn blocking_failed_reupload_drops_stale_checkpoint_part() {
     let backend = BlockingMockBackend::default();
     backend.fail_once_for_part(1);
-    let uploader = BlockingResumableUploader::new(
+    let uploader = ResumableUploader::new(
         ResumableUploadOptions::new()
             .with_part_size(4)
-            .with_part_checksum_algorithm(PartChecksumAlgorithm::Md5)
+            .with_part_checksum_algorithm(Some(PartChecksumAlgorithm::Md5))
             .with_verify_remote_etag(true)
             .with_max_attempts(1)
             .with_jitter_ratio(0.0),
@@ -634,7 +656,7 @@ fn blocking_failed_reupload_drops_stale_checkpoint_part() {
 
     let mut reader = std::io::Cursor::new(b"abcdefgh".to_vec());
     let error = uploader
-        .resume(&backend, &mut reader, checkpoint)
+        .resume_blocking(&backend, &mut reader, checkpoint)
         .expect_err("failed reupload should return repairable checkpoint");
 
     match error {
@@ -656,70 +678,51 @@ fn blocking_failed_reupload_drops_stale_checkpoint_part() {
 }
 
 #[test]
-fn blocking_resume_normalizes_checkpoint_part_numbers_before_completion() {
+fn blocking_resume_rejects_invalid_checkpoint_part_numbers_before_io() {
     let backend = BlockingMockBackend::default();
-    let uploader = BlockingResumableUploader::new(
+    let uploader = ResumableUploader::new(
         ResumableUploadOptions::new()
             .with_part_size(4)
-            .with_part_checksum_algorithm(PartChecksumAlgorithm::Md5)
-            .with_max_attempts(1)
-            .with_jitter_ratio(0.0),
+            .with_abort_on_error(true),
     );
 
-    let mut checkpoint = ResumableUploadCheckpoint::new("upload-1", 4);
-    checkpoint.checksum_algorithm = Some(PartChecksumAlgorithm::Md5);
-    checkpoint.completed_parts.insert(
-        0,
-        UploadedPart {
-            part_number: 0,
-            etag: "unused".to_owned(),
-            size: 4,
-            checksum: Some(PartChecksumAlgorithm::Md5.compute_hex(b"zero")),
-        },
-    );
-    checkpoint.completed_parts.insert(
-        1,
-        UploadedPart {
-            part_number: 99,
-            etag: "etag-1".to_owned(),
-            size: 4,
-            checksum: Some(PartChecksumAlgorithm::Md5.compute_hex(b"abcd")),
-        },
-    );
+    for (checkpoint_key, part_number) in [(0, 0), (0, 1), (1, 0), (1, 99)] {
+        let mut checkpoint = ResumableUploadCheckpoint::new("upload-1", 4);
+        checkpoint
+            .completed_parts
+            .insert(checkpoint_key, UploadedPart::new(part_number, "etag-1", 4));
 
-    let mut reader = std::io::Cursor::new(b"abcd".to_vec());
-    let result = uploader
-        .resume(&backend, &mut reader, checkpoint)
-        .expect("resume should normalize checkpoint part metadata");
+        let mut reader = std::io::Cursor::new(b"abcd".to_vec());
+        let error = uploader
+            .resume_blocking(&backend, &mut reader, checkpoint)
+            .expect_err("invalid checkpoint part numbers must be rejected");
 
-    assert_eq!(result.total_parts, 1);
-    assert_eq!(result.completed_parts[0].part_number, 1);
-    assert_eq!(
-        backend
-            .attempts
-            .lock()
-            .expect("lock attempts")
-            .get(&1)
-            .copied(),
-        None
-    );
+        match error {
+            ResumableUploadError::InvalidCheckpointPartNumber {
+                checkpoint_key: actual_key,
+                part_number: actual_number,
+            } => {
+                assert_eq!(actual_key, checkpoint_key);
+                assert_eq!(actual_number, part_number);
+            }
+            other => panic!("unexpected error variant: {other}"),
+        }
+        assert_eq!(reader.position(), 0, "validation must precede source reads");
+    }
 
-    let completed_payloads = backend
-        .completed_payloads
-        .lock()
-        .expect("lock completed_payloads");
-    assert_eq!(completed_payloads.len(), 1);
-    assert_eq!(completed_payloads[0].len(), 1);
-    assert_eq!(completed_payloads[0][0].part_number, 1);
+    assert!(backend.attempts.lock().expect("lock attempts").is_empty());
+    assert_eq!(backend.completed.load(Ordering::SeqCst), 0);
+    assert_eq!(backend.aborts.load(Ordering::SeqCst), 0);
+    assert_eq!(backend.create_calls.load(Ordering::SeqCst), 0);
 }
 
 #[test]
 fn blocking_resume_rejects_checkpoint_that_is_ahead_of_source() {
     let backend = BlockingMockBackend::default();
-    let uploader = BlockingResumableUploader::new(
+    let uploader = ResumableUploader::new(
         ResumableUploadOptions::new()
             .with_part_size(4)
-            .with_part_checksum_algorithm(PartChecksumAlgorithm::Md5)
+            .with_part_checksum_algorithm(Some(PartChecksumAlgorithm::Md5))
             .with_max_attempts(1)
             .with_jitter_ratio(0.0),
     );
@@ -747,7 +750,7 @@ fn blocking_resume_rejects_checkpoint_that_is_ahead_of_source() {
 
     let mut reader = std::io::Cursor::new(b"abcd".to_vec());
     let error = uploader
-        .resume(&backend, &mut reader, checkpoint)
+        .resume_blocking(&backend, &mut reader, checkpoint)
         .expect_err("resume should reject checkpoints that run past the source");
 
     match error {
@@ -763,10 +766,10 @@ fn blocking_resume_rejects_checkpoint_that_is_ahead_of_source() {
 fn blocking_retry_failure_returns_checkpoint_for_resume() {
     let backend = BlockingMockBackend::default();
     backend.fail_once_for_part(2);
-    let uploader = BlockingResumableUploader::new(
+    let uploader = ResumableUploader::new(
         ResumableUploadOptions::new()
             .with_part_size(4)
-            .with_part_checksum_algorithm(PartChecksumAlgorithm::Md5)
+            .with_part_checksum_algorithm(Some(PartChecksumAlgorithm::Md5))
             .with_max_attempts(1)
             .with_base_backoff(Duration::from_millis(1))
             .with_max_backoff(Duration::from_millis(1))
@@ -775,7 +778,7 @@ fn blocking_retry_failure_returns_checkpoint_for_resume() {
 
     let mut reader = std::io::Cursor::new(b"abcdefgh".to_vec());
     let error = uploader
-        .upload(&backend, &mut reader)
+        .upload_blocking(&backend, &mut reader)
         .expect_err("upload should fail when retries exhausted");
 
     match error {
@@ -804,11 +807,11 @@ fn blocking_retry_failure_returns_checkpoint_for_resume() {
 #[test]
 fn blocking_upload_rejects_invalid_options_before_create_upload() {
     let backend = BlockingMockBackend::default();
-    let uploader = BlockingResumableUploader::new(ResumableUploadOptions::new().with_part_size(0));
+    let uploader = ResumableUploader::new(ResumableUploadOptions::new().with_part_size(0));
 
     let mut reader = std::io::Cursor::new(b"abcd".to_vec());
     let error = uploader
-        .upload(&backend, &mut reader)
+        .upload_blocking(&backend, &mut reader)
         .expect_err("invalid options should fail before creating an upload");
 
     match error {
@@ -855,7 +858,7 @@ fn resumable_upload_options_reject_incoherent_backoff_window() {
 #[test]
 fn blocking_abort_on_error_aborts_after_source_read_failure() {
     let backend = BlockingMockBackend::default();
-    let uploader = BlockingResumableUploader::new(
+    let uploader = ResumableUploader::new(
         ResumableUploadOptions::new()
             .with_part_size(4)
             .with_abort_on_error(true)
@@ -865,7 +868,7 @@ fn blocking_abort_on_error_aborts_after_source_read_failure() {
 
     let mut reader = FailingReader::new(b"abcd");
     let error = uploader
-        .upload(&backend, &mut reader)
+        .upload_blocking(&backend, &mut reader)
         .expect_err("upload should fail when the source reader errors");
 
     match error {
@@ -882,7 +885,7 @@ fn blocking_abort_on_error_aborts_after_source_read_failure() {
 fn blocking_abort_on_error_aborts_after_complete_failure() {
     let backend = BlockingMockBackend::default();
     backend.fail_complete();
-    let uploader = BlockingResumableUploader::new(
+    let uploader = ResumableUploader::new(
         ResumableUploadOptions::new()
             .with_part_size(4)
             .with_abort_on_error(true)
@@ -892,7 +895,7 @@ fn blocking_abort_on_error_aborts_after_complete_failure() {
 
     let mut reader = std::io::Cursor::new(b"abcd".to_vec());
     let error = uploader
-        .upload(&backend, &mut reader)
+        .upload_blocking(&backend, &mut reader)
         .expect_err("upload should fail when completion fails");
 
     match error {
@@ -910,7 +913,7 @@ fn blocking_abort_failure_preserves_original_error_and_checkpoint() {
     let backend = BlockingMockBackend::default();
     backend.fail_complete();
     backend.fail_abort();
-    let uploader = BlockingResumableUploader::new(
+    let uploader = ResumableUploader::new(
         ResumableUploadOptions::new()
             .with_part_size(4)
             .with_abort_on_error(true)
@@ -920,7 +923,7 @@ fn blocking_abort_failure_preserves_original_error_and_checkpoint() {
 
     let mut reader = std::io::Cursor::new(b"abcd".to_vec());
     let error = uploader
-        .upload(&backend, &mut reader)
+        .upload_blocking(&backend, &mut reader)
         .expect_err("abort failure should be reported");
 
     assert_eq!(
@@ -950,7 +953,7 @@ fn blocking_abort_failure_preserves_original_error_and_checkpoint() {
 #[test]
 fn blocking_abort_on_error_aborts_empty_upload_body() {
     let backend = BlockingMockBackend::default();
-    let uploader = BlockingResumableUploader::new(
+    let uploader = ResumableUploader::new(
         ResumableUploadOptions::new()
             .with_part_size(4)
             .with_abort_on_error(true)
@@ -960,7 +963,7 @@ fn blocking_abort_on_error_aborts_empty_upload_body() {
 
     let mut reader = std::io::Cursor::new(Vec::<u8>::new());
     let error = uploader
-        .upload(&backend, &mut reader)
+        .upload_blocking(&backend, &mut reader)
         .expect_err("empty uploads should fail");
 
     match error {
@@ -974,10 +977,10 @@ fn blocking_abort_on_error_aborts_empty_upload_body() {
 #[test]
 fn blocking_empty_upload_preserves_session_for_explicit_cleanup() {
     let backend = BlockingMockBackend::default();
-    let uploader = BlockingResumableUploader::new(ResumableUploadOptions::new().with_part_size(4));
+    let uploader = ResumableUploader::new(ResumableUploadOptions::new().with_part_size(4));
     let mut reader = std::io::Cursor::new(Vec::<u8>::new());
     let error = uploader
-        .upload(&backend, &mut reader)
+        .upload_blocking(&backend, &mut reader)
         .expect_err("empty uploads should fail");
 
     assert!(matches!(
@@ -999,14 +1002,14 @@ fn blocking_empty_upload_preserves_session_for_explicit_cleanup() {
     assert_eq!(backend.aborts.load(Ordering::SeqCst), 1);
 }
 
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 #[tokio::test]
 async fn async_empty_upload_preserves_session_for_explicit_cleanup() {
     let backend = AsyncMockBackend::default();
-    let uploader = AsyncResumableUploader::new(ResumableUploadOptions::new().with_part_size(4));
+    let uploader = ResumableUploader::new(ResumableUploadOptions::new().with_part_size(4));
     let mut reader = std::io::Cursor::new(Vec::<u8>::new());
     let error = uploader
-        .upload(&backend, &mut reader)
+        .upload_async(&backend, &mut reader)
         .await
         .expect_err("empty uploads should fail");
 
@@ -1034,10 +1037,10 @@ async fn async_empty_upload_preserves_session_for_explicit_cleanup() {
 fn blocking_etag_mismatch_returns_integrity_error() {
     let backend = BlockingMockBackend::default();
     backend.set_etag_for_part(1, "not-md5");
-    let uploader = BlockingResumableUploader::new(
+    let uploader = ResumableUploader::new(
         ResumableUploadOptions::new()
             .with_part_size(4)
-            .with_part_checksum_algorithm(PartChecksumAlgorithm::Md5)
+            .with_part_checksum_algorithm(Some(PartChecksumAlgorithm::Md5))
             .with_verify_remote_etag(true)
             .with_max_attempts(1)
             .with_jitter_ratio(0.0),
@@ -1045,7 +1048,7 @@ fn blocking_etag_mismatch_returns_integrity_error() {
 
     let mut reader = std::io::Cursor::new(b"abcd".to_vec());
     let error = uploader
-        .upload(&backend, &mut reader)
+        .upload_blocking(&backend, &mut reader)
         .expect_err("upload should fail on etag mismatch");
 
     match error {
@@ -1062,75 +1065,66 @@ fn blocking_etag_mismatch_returns_integrity_error() {
 }
 
 #[test]
-fn blocking_checkpoint_checksum_algorithm_mismatch_is_rejected() {
+fn blocking_resume_rejects_checkpoint_checksum_algorithm_changes() {
     let backend = BlockingMockBackend::default();
-    let uploader = BlockingResumableUploader::new(
-        ResumableUploadOptions::new()
+    for (checkpoint_algorithm, options_algorithm, expected_checkpoint, expected_options) in [
+        (
+            Some(PartChecksumAlgorithm::Md5),
+            Some(PartChecksumAlgorithm::Sha256),
+            "md5",
+            "sha256",
+        ),
+        (Some(PartChecksumAlgorithm::Md5), None, "md5", "none"),
+        (None, Some(PartChecksumAlgorithm::Sha256), "none", "sha256"),
+    ] {
+        let mut options = ResumableUploadOptions::new()
             .with_part_size(4)
-            .with_part_checksum_algorithm(PartChecksumAlgorithm::Sha256)
-            .with_max_attempts(1)
-            .with_jitter_ratio(0.0),
-    );
-
-    let mut checkpoint = ResumableUploadCheckpoint::new("upload-1", 4);
-    checkpoint.checksum_algorithm = Some(PartChecksumAlgorithm::Md5);
-
-    let mut reader = std::io::Cursor::new(b"abcd".to_vec());
-    let error = uploader
-        .resume(&backend, &mut reader, checkpoint)
-        .expect_err("resume should reject checksum algorithm mismatch");
-
-    match error {
-        ResumableUploadError::CheckpointChecksumAlgorithmMismatch { .. } => {}
-        other => panic!("unexpected error variant: {other}"),
-    }
-}
-
-#[test]
-fn blocking_checkpoint_checksum_algorithm_downgrade_is_rejected() {
-    let backend = BlockingMockBackend::default();
-    let uploader = BlockingResumableUploader::new(
-        ResumableUploadOptions::new()
-            .with_part_size(4)
-            .with_max_attempts(1)
-            .with_jitter_ratio(0.0),
-    );
-
-    let mut checkpoint = ResumableUploadCheckpoint::new("upload-1", 4);
-    checkpoint.checksum_algorithm = Some(PartChecksumAlgorithm::Md5);
-
-    let mut reader = std::io::Cursor::new(b"abcd".to_vec());
-    let error = uploader
-        .resume(&backend, &mut reader, checkpoint)
-        .expect_err("resume should reject checksum algorithm downgrade");
-
-    match error {
-        ResumableUploadError::CheckpointChecksumAlgorithmMismatch {
-            checkpoint_checksum_algorithm,
-            options_checksum_algorithm,
-        } => {
-            assert_eq!(checkpoint_checksum_algorithm, "md5");
-            assert_eq!(options_checksum_algorithm, "none");
+            .with_abort_on_error(true);
+        if let Some(algorithm) = options_algorithm {
+            options = options.with_part_checksum_algorithm(Some(algorithm));
         }
-        other => panic!("unexpected error variant: {other}"),
+        let uploader = ResumableUploader::new(options);
+        let mut checkpoint = ResumableUploadCheckpoint::new("upload-1", 4);
+        checkpoint.checksum_algorithm = checkpoint_algorithm;
+
+        let mut reader = std::io::Cursor::new(b"abcd".to_vec());
+        let error = uploader
+            .resume_blocking(&backend, &mut reader, checkpoint)
+            .expect_err("resume must reject checksum algorithm changes");
+        match error {
+            ResumableUploadError::CheckpointChecksumAlgorithmMismatch {
+                checkpoint_checksum_algorithm,
+                options_checksum_algorithm,
+            } => {
+                assert_eq!(checkpoint_checksum_algorithm, expected_checkpoint);
+                assert_eq!(options_checksum_algorithm, expected_options);
+            }
+            other => panic!("unexpected error variant: {other}"),
+        }
+        assert_eq!(reader.position(), 0, "validation must precede source reads");
     }
+
+    assert!(backend.attempts.lock().expect("lock attempts").is_empty());
+    assert_eq!(backend.completed.load(Ordering::SeqCst), 0);
+    assert_eq!(backend.aborts.load(Ordering::SeqCst), 0);
+    assert_eq!(backend.create_calls.load(Ordering::SeqCst), 0);
 }
 
 #[test]
 fn blocking_part_checksum_mismatch_returns_integrity_error() {
     let backend = BlockingMockBackend::default();
     backend.set_checksum_for_part(1, Some("bad-checksum".to_owned()));
-    let uploader = BlockingResumableUploader::new(
+    let uploader = ResumableUploader::new(
         ResumableUploadOptions::new()
             .with_part_size(4)
-            .with_part_checksum_algorithm(PartChecksumAlgorithm::Md5)
+            .with_part_checksum_algorithm(Some(PartChecksumAlgorithm::Md5))
             .with_max_attempts(1)
             .with_jitter_ratio(0.0),
     );
 
     let mut reader = std::io::Cursor::new(b"abcd".to_vec());
     let error = uploader
-        .upload(&backend, &mut reader)
+        .upload_blocking(&backend, &mut reader)
         .expect_err("upload should fail on checksum mismatch");
 
     match error {
@@ -1216,7 +1210,7 @@ fn resumable_upload_options_reject_etag_verification_without_checksum() {
     }
 }
 
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 #[derive(Default)]
 struct AsyncMockBackend {
     uploaded_parts: Arc<Mutex<BTreeMap<u32, Vec<u8>>>>,
@@ -1230,7 +1224,7 @@ struct AsyncMockBackend {
     completed_payloads: Arc<Mutex<Vec<Vec<UploadedPart>>>>,
 }
 
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 impl AsyncMockBackend {
     fn fail_once_for_part(&self, part_number: u32) {
         let mut fail_once = self.fail_once_parts.lock().expect("lock fail_once_parts");
@@ -1246,7 +1240,7 @@ impl AsyncMockBackend {
     }
 }
 
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 impl AsyncResumableUploadBackend for AsyncMockBackend {
     type Error = MockError;
 
@@ -1308,15 +1302,15 @@ impl AsyncResumableUploadBackend for AsyncMockBackend {
     }
 }
 
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 #[tokio::test(flavor = "current_thread")]
 async fn async_resume_reuses_checkpoint_and_completes() {
     let backend = AsyncMockBackend::default();
     backend.fail_once_for_part(2);
-    let uploader = AsyncResumableUploader::new(
+    let uploader = ResumableUploader::new(
         ResumableUploadOptions::new()
             .with_part_size(4)
-            .with_part_checksum_algorithm(PartChecksumAlgorithm::Md5)
+            .with_part_checksum_algorithm(Some(PartChecksumAlgorithm::Md5))
             .with_max_attempts(1)
             .with_base_backoff(Duration::from_millis(1))
             .with_max_backoff(Duration::from_millis(1))
@@ -1325,7 +1319,7 @@ async fn async_resume_reuses_checkpoint_and_completes() {
 
     let mut first_reader = std::io::Cursor::new(b"abcdefgh".to_vec());
     let first_error = uploader
-        .upload(&backend, &mut first_reader)
+        .upload_async(&backend, &mut first_reader)
         .await
         .expect_err("first upload should fail");
     let checkpoint = first_error
@@ -1338,16 +1332,16 @@ async fn async_resume_reuses_checkpoint_and_completes() {
     assert!(part_1.checksum.is_some());
 
     let mut second_reader = std::io::Cursor::new(b"abcdefgh".to_vec());
-    let resumed = AsyncResumableUploader::new(
+    let resumed = ResumableUploader::new(
         ResumableUploadOptions::new()
             .with_part_size(4)
-            .with_part_checksum_algorithm(PartChecksumAlgorithm::Md5)
+            .with_part_checksum_algorithm(Some(PartChecksumAlgorithm::Md5))
             .with_max_attempts(2)
             .with_base_backoff(Duration::from_millis(1))
             .with_max_backoff(Duration::from_millis(1))
             .with_jitter_ratio(0.0),
     )
-    .resume(&backend, &mut second_reader, checkpoint)
+    .resume_async(&backend, &mut second_reader, checkpoint)
     .await
     .expect("resume should succeed");
 
@@ -1356,15 +1350,15 @@ async fn async_resume_reuses_checkpoint_and_completes() {
     assert_eq!(backend.completed.load(Ordering::SeqCst), 1);
 }
 
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 #[tokio::test(flavor = "current_thread")]
 async fn async_upload_rejects_invalid_options_before_create_upload() {
     let backend = AsyncMockBackend::default();
-    let uploader = AsyncResumableUploader::new(ResumableUploadOptions::new().with_max_attempts(0));
+    let uploader = ResumableUploader::new(ResumableUploadOptions::new().with_max_attempts(0));
 
     let mut reader = std::io::Cursor::new(b"abcd".to_vec());
     let error = uploader
-        .upload(&backend, &mut reader)
+        .upload_async(&backend, &mut reader)
         .await
         .expect_err("invalid options should fail before creating an upload");
 
@@ -1383,14 +1377,14 @@ async fn async_upload_rejects_invalid_options_before_create_upload() {
     assert_eq!(backend.aborts.load(Ordering::SeqCst), 0);
 }
 
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 #[tokio::test(flavor = "current_thread")]
 async fn async_resume_reuploads_checkpoint_part_when_verified_etag_mismatches() {
     let backend = AsyncMockBackend::default();
-    let uploader = AsyncResumableUploader::new(
+    let uploader = ResumableUploader::new(
         ResumableUploadOptions::new()
             .with_part_size(4)
-            .with_part_checksum_algorithm(PartChecksumAlgorithm::Md5)
+            .with_part_checksum_algorithm(Some(PartChecksumAlgorithm::Md5))
             .with_verify_remote_etag(true)
             .with_max_attempts(1)
             .with_jitter_ratio(0.0),
@@ -1410,7 +1404,7 @@ async fn async_resume_reuploads_checkpoint_part_when_verified_etag_mismatches() 
 
     let mut reader = std::io::Cursor::new(b"abcdefgh".to_vec());
     let result = uploader
-        .resume(&backend, &mut reader, checkpoint)
+        .resume_async(&backend, &mut reader, checkpoint)
         .await
         .expect("resume should repair stale checkpoint etag");
 
@@ -1421,74 +1415,55 @@ async fn async_resume_reuploads_checkpoint_part_when_verified_etag_mismatches() 
     assert_eq!(attempts.get(&2).copied(), Some(1));
 }
 
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 #[tokio::test(flavor = "current_thread")]
-async fn async_resume_normalizes_checkpoint_part_numbers_before_completion() {
+async fn async_resume_rejects_invalid_checkpoint_part_numbers_before_io() {
     let backend = AsyncMockBackend::default();
-    let uploader = AsyncResumableUploader::new(
+    let uploader = ResumableUploader::new(
         ResumableUploadOptions::new()
             .with_part_size(4)
-            .with_part_checksum_algorithm(PartChecksumAlgorithm::Md5)
-            .with_max_attempts(1)
-            .with_jitter_ratio(0.0),
+            .with_abort_on_error(true),
     );
 
-    let mut checkpoint = ResumableUploadCheckpoint::new("upload-async-1", 4);
-    checkpoint.checksum_algorithm = Some(PartChecksumAlgorithm::Md5);
-    checkpoint.completed_parts.insert(
-        0,
-        UploadedPart {
-            part_number: 0,
-            etag: "unused".to_owned(),
-            size: 4,
-            checksum: Some(PartChecksumAlgorithm::Md5.compute_hex(b"zero")),
-        },
-    );
-    checkpoint.completed_parts.insert(
-        1,
-        UploadedPart {
-            part_number: 99,
-            etag: "etag-1".to_owned(),
-            size: 4,
-            checksum: Some(PartChecksumAlgorithm::Md5.compute_hex(b"abcd")),
-        },
-    );
+    for (checkpoint_key, part_number) in [(0, 0), (0, 1), (1, 0), (1, 99)] {
+        let mut checkpoint = ResumableUploadCheckpoint::new("upload-1", 4);
+        checkpoint
+            .completed_parts
+            .insert(checkpoint_key, UploadedPart::new(part_number, "etag-1", 4));
 
-    let mut reader = std::io::Cursor::new(b"abcd".to_vec());
-    let result = uploader
-        .resume(&backend, &mut reader, checkpoint)
-        .await
-        .expect("resume should normalize checkpoint part metadata");
+        let mut reader = std::io::Cursor::new(b"abcd".to_vec());
+        let error = uploader
+            .resume_async(&backend, &mut reader, checkpoint)
+            .await
+            .expect_err("invalid checkpoint part numbers must be rejected");
 
-    assert_eq!(result.total_parts, 1);
-    assert_eq!(result.completed_parts[0].part_number, 1);
-    assert_eq!(
-        backend
-            .attempts
-            .lock()
-            .expect("lock attempts")
-            .get(&1)
-            .copied(),
-        None
-    );
+        match error {
+            ResumableUploadError::InvalidCheckpointPartNumber {
+                checkpoint_key: actual_key,
+                part_number: actual_number,
+            } => {
+                assert_eq!(actual_key, checkpoint_key);
+                assert_eq!(actual_number, part_number);
+            }
+            other => panic!("unexpected error variant: {other}"),
+        }
+        assert_eq!(reader.position(), 0, "validation must precede source reads");
+    }
 
-    let completed_payloads = backend
-        .completed_payloads
-        .lock()
-        .expect("lock completed_payloads");
-    assert_eq!(completed_payloads.len(), 1);
-    assert_eq!(completed_payloads[0].len(), 1);
-    assert_eq!(completed_payloads[0][0].part_number, 1);
+    assert!(backend.attempts.lock().expect("lock attempts").is_empty());
+    assert_eq!(backend.completed.load(Ordering::SeqCst), 0);
+    assert_eq!(backend.aborts.load(Ordering::SeqCst), 0);
+    assert_eq!(backend.create_calls.load(Ordering::SeqCst), 0);
 }
 
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 #[tokio::test(flavor = "current_thread")]
 async fn async_resume_rejects_checkpoint_that_is_ahead_of_source() {
     let backend = AsyncMockBackend::default();
-    let uploader = AsyncResumableUploader::new(
+    let uploader = ResumableUploader::new(
         ResumableUploadOptions::new()
             .with_part_size(4)
-            .with_part_checksum_algorithm(PartChecksumAlgorithm::Md5)
+            .with_part_checksum_algorithm(Some(PartChecksumAlgorithm::Md5))
             .with_max_attempts(1)
             .with_jitter_ratio(0.0),
     );
@@ -1516,7 +1491,7 @@ async fn async_resume_rejects_checkpoint_that_is_ahead_of_source() {
 
     let mut reader = std::io::Cursor::new(b"abcd".to_vec());
     let error = uploader
-        .resume(&backend, &mut reader, checkpoint)
+        .resume_async(&backend, &mut reader, checkpoint)
         .await
         .expect_err("resume should reject checkpoints that run past the source");
 
@@ -1529,12 +1504,12 @@ async fn async_resume_rejects_checkpoint_that_is_ahead_of_source() {
     }
 }
 
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 #[tokio::test(flavor = "current_thread")]
 async fn async_abort_on_error_aborts_after_complete_failure() {
     let backend = AsyncMockBackend::default();
     backend.fail_complete();
-    let uploader = AsyncResumableUploader::new(
+    let uploader = ResumableUploader::new(
         ResumableUploadOptions::new()
             .with_part_size(4)
             .with_abort_on_error(true)
@@ -1544,7 +1519,7 @@ async fn async_abort_on_error_aborts_after_complete_failure() {
 
     let mut reader = std::io::Cursor::new(b"abcd".to_vec());
     let error = uploader
-        .upload(&backend, &mut reader)
+        .upload_async(&backend, &mut reader)
         .await
         .expect_err("upload should fail when completion fails");
 
@@ -1558,13 +1533,13 @@ async fn async_abort_on_error_aborts_after_complete_failure() {
     assert_eq!(backend.aborts.load(Ordering::SeqCst), 1);
 }
 
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 #[tokio::test(flavor = "current_thread")]
 async fn async_abort_failure_preserves_original_error_and_checkpoint() {
     let backend = AsyncMockBackend::default();
     backend.fail_complete();
     backend.fail_abort();
-    let uploader = AsyncResumableUploader::new(
+    let uploader = ResumableUploader::new(
         ResumableUploadOptions::new()
             .with_part_size(4)
             .with_abort_on_error(true)
@@ -1574,7 +1549,7 @@ async fn async_abort_failure_preserves_original_error_and_checkpoint() {
 
     let mut reader = std::io::Cursor::new(b"abcd".to_vec());
     let error = uploader
-        .upload(&backend, &mut reader)
+        .upload_async(&backend, &mut reader)
         .await
         .expect_err("abort failure should be reported");
 
@@ -1605,23 +1580,21 @@ async fn async_abort_failure_preserves_original_error_and_checkpoint() {
 #[test]
 fn blocking_upload_rejects_unrepresentable_part_size_before_creating_session() {
     let backend = BlockingMockBackend::default();
-    let uploader =
-        BlockingResumableUploader::new(ResumableUploadOptions::new().with_part_size(usize::MAX));
+    let uploader = ResumableUploader::new(ResumableUploadOptions::new().with_part_size(usize::MAX));
     let error = uploader
-        .upload(&backend, &mut std::io::empty())
+        .upload_blocking(&backend, &mut std::io::empty())
         .expect_err("invalid part size must return an error");
     assert!(matches!(error, ResumableUploadError::InvalidOptions { .. }));
     assert_eq!(backend.create_calls.load(Ordering::SeqCst), 0);
 }
 
-#[cfg(feature = "_async")]
+#[cfg(feature = "resumable-upload-async")]
 #[tokio::test]
 async fn async_upload_rejects_unrepresentable_part_size_before_creating_session() {
     let backend = AsyncMockBackend::default();
-    let uploader =
-        AsyncResumableUploader::new(ResumableUploadOptions::new().with_part_size(usize::MAX));
+    let uploader = ResumableUploader::new(ResumableUploadOptions::new().with_part_size(usize::MAX));
     let error = uploader
-        .upload(&backend, &mut tokio::io::empty())
+        .upload_async(&backend, &mut tokio::io::empty())
         .await
         .expect_err("invalid part size must return an error");
     assert!(matches!(error, ResumableUploadError::InvalidOptions { .. }));

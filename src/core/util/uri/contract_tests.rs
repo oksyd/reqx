@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use super::{append_query_pairs, join_base_path, resolve_uri};
+use super::{append_query, join_base_path, resolve_uri};
 
 use crate::core::error::Error;
 
@@ -140,8 +140,7 @@ fn resolve_uri_preserves_extra_leading_slashes_in_relative_path() {
 
 #[test]
 fn resolve_uri_rejects_malformed_http_absolute_uri_after_query_append() {
-    let query_pairs = vec![("page".to_owned(), "1".to_owned())];
-    let path = append_query_pairs("HTTPS:/x", &query_pairs);
+    let path = append_query("HTTPS:/x".to_owned(), "page=1");
     let error = resolve_uri("https://api.example.com/v1", &path)
         .expect_err("malformed absolute http URI should stay rejected after query append");
     match error {
@@ -153,12 +152,11 @@ fn resolve_uri_rejects_malformed_http_absolute_uri_after_query_append() {
 }
 
 #[test]
-fn append_query_pairs_merges_existing_query_and_fragment() {
-    let query_pairs = vec![
-        ("name".to_owned(), "alice bob".to_owned()),
-        ("page".to_owned(), "2".to_owned()),
-    ];
-    let merged = append_query_pairs("/v1/users?active=true#section", &query_pairs);
+fn append_query_merges_existing_query_and_fragment() {
+    let merged = append_query(
+        "/v1/users?active=true#section".to_owned(),
+        "name=alice+bob&page=2",
+    );
     assert!(merged.starts_with("/v1/users?"));
     assert!(merged.ends_with("#section"));
 
@@ -176,35 +174,34 @@ fn append_query_pairs_merges_existing_query_and_fragment() {
 
 #[test]
 fn query_append_preserves_existing_uri_bytes() {
-    let pairs = vec![("next".to_owned(), "a b+c".to_owned())];
+    let query = "next=a+b%2Bc";
     for input in [
         "/v1/a/../b?token=%2f%2F&space=%20&flag&raw=%FF&&",
         "https://EXAMPLE.com:443/v1/a/../b?token=%2f%2F&space=%20&flag&raw=%FF&&",
     ] {
         assert_eq!(
-            append_query_pairs(input, &pairs),
+            append_query(input.to_owned(), query),
             format!("{input}next=a+b%2Bc")
         );
     }
     assert_eq!(
-        append_query_pairs("/v1?q=?#fragment?", &pairs),
+        append_query("/v1?q=?#fragment?".to_owned(), query),
         "/v1?q=?&next=a+b%2Bc#fragment?"
     );
     for input in ["/v1?", "https://example.com/v1?"] {
         assert_eq!(
-            append_query_pairs(input, &pairs),
+            append_query(input.to_owned(), query),
             format!("{input}next=a+b%2Bc")
         );
     }
 }
 
 #[test]
-fn append_query_pairs_handles_absolute_url() {
-    let query_pairs = vec![
-        ("topic".to_owned(), "rust sdk".to_owned()),
-        ("lang".to_owned(), "zh".to_owned()),
-    ];
-    let merged = append_query_pairs("https://api.example.com/search?q=hello", &query_pairs);
+fn append_query_handles_absolute_url() {
+    let merged = append_query(
+        "https://api.example.com/search?q=hello".to_owned(),
+        "topic=rust+sdk&lang=zh",
+    );
     let parsed = url::Url::parse(&merged).expect("merged url should parse");
     let parsed_query: BTreeMap<String, String> = parsed
         .query_pairs()
@@ -216,8 +213,7 @@ fn append_query_pairs_handles_absolute_url() {
 }
 
 #[test]
-fn append_query_pairs_preserves_malformed_http_absolute_shape() {
-    let query_pairs = vec![("page".to_owned(), "1".to_owned())];
-    let merged = append_query_pairs("HTTPS:/x", &query_pairs);
+fn append_query_preserves_malformed_http_absolute_shape() {
+    let merged = append_query("HTTPS:/x".to_owned(), "page=1");
     assert_eq!(merged, "HTTPS:/x?page=1");
 }

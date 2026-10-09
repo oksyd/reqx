@@ -5,29 +5,18 @@ use crate::core::error::Error;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Redirect handling policy.
 pub struct RedirectPolicy {
-    enabled: bool,
     max_redirects: usize,
 }
 
 impl RedirectPolicy {
     /// Disables automatic redirect following.
     pub const fn none() -> Self {
-        Self {
-            enabled: false,
-            max_redirects: 0,
-        }
+        Self { max_redirects: 0 }
     }
 
     /// Follows redirects up to `max_redirects`.
     pub const fn limited(max_redirects: usize) -> Self {
-        if max_redirects == 0 {
-            Self::none()
-        } else {
-            Self {
-                enabled: true,
-                max_redirects,
-            }
-        }
+        Self { max_redirects }
     }
 
     /// Follows redirects with the default limit of 10 hops.
@@ -37,12 +26,12 @@ impl RedirectPolicy {
 
     /// Returns whether redirect following is enabled.
     pub const fn enabled(self) -> bool {
-        self.enabled
+        self.max_redirects > 0
     }
 
     /// Returns the configured redirect limit.
     pub const fn max_redirects(self) -> usize {
-        if self.enabled { self.max_redirects } else { 0 }
+        self.max_redirects
     }
 }
 
@@ -76,16 +65,6 @@ pub enum StatusPolicy {
 }
 
 impl StatusPolicy {
-    /// Returns [`Self::Error`].
-    pub const fn error() -> Self {
-        Self::Error
-    }
-
-    /// Returns [`Self::Response`].
-    pub const fn response() -> Self {
-        Self::Response
-    }
-
     /// Returns `true` when non-success statuses are converted into errors.
     pub const fn is_error(self) -> bool {
         matches!(self, Self::Error)

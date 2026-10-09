@@ -11,33 +11,20 @@ use crate::core::extensions::Clock;
 use crate::core::limiters::{
     PER_HOST_LIMITER_ENTRY_TTL, PER_HOST_LIMITER_MAX_ENTRIES,
     PerHostLimiterEntry as PerHostLimiterEntryState, cleanup_stale_per_host_limiters,
-    normalize_optional_concurrency_limit,
 };
 use crate::core::util::{lock_unpoisoned, normalize_host_key};
 
-#[derive(Clone)]
 pub(crate) struct RequestLimiters {
     clock: Arc<dyn Clock>,
     global: Option<Arc<Semaphore>>,
     per_host_limit: Option<usize>,
-    per_host: Arc<Mutex<BTreeMap<String, PerHostLimiterEntry>>>,
+    per_host: Mutex<BTreeMap<String, PerHostLimiterEntry>>,
 }
 
-#[derive(Clone)]
 struct PerHostLimiterEntry {
     semaphore: Arc<Semaphore>,
     limit: usize,
     last_used_at: Instant,
-}
-
-#[derive(Debug)]
-pub(crate) struct GlobalRequestPermit {
-    pub(crate) _permit: Option<OwnedSemaphorePermit>,
-}
-
-#[derive(Debug)]
-pub(crate) struct HostRequestPermit {
-    pub(crate) _permit: Option<OwnedSemaphorePermit>,
 }
 
 impl PerHostLimiterEntryState for PerHostLimiterEntry {
@@ -57,8 +44,8 @@ impl RequestLimiters {
         per_host_limit: Option<usize>,
         clock: Arc<dyn Clock>,
     ) -> Option<Self> {
-        let max_in_flight = normalize_optional_concurrency_limit(max_in_flight);
-        let per_host_limit = normalize_optional_concurrency_limit(per_host_limit);
+        debug_assert!(max_in_flight.is_none_or(|limit| limit > 0));
+        debug_assert!(per_host_limit.is_none_or(|limit| limit > 0));
         if max_in_flight.is_none() && per_host_limit.is_none() {
             return None;
         }
@@ -67,11 +54,11 @@ impl RequestLimiters {
             clock,
             global: max_in_flight.map(|limit| Arc::new(Semaphore::new(limit))),
             per_host_limit,
-            per_host: Arc::new(Mutex::new(BTreeMap::new())),
+            per_host: Mutex::new(BTreeMap::new()),
         })
     }
 
-    pub(crate) async fn acquire_global(&self) -> Result<GlobalRequestPermit, Error> {
+    pub(crate) async fn acquire_global(&self) -> Result<Option<OwnedSemaphorePermit>, Error> {
         let permit = if let Some(semaphore) = &self.global {
             Some(
                 semaphore
@@ -83,14 +70,18 @@ impl RequestLimiters {
         } else {
             None
         };
-        Ok(GlobalRequestPermit { _permit: permit })
+        Ok(permit)
     }
 
     pub(crate) async fn acquire_host(
         &self,
         host: Option<&str>,
-    ) -> Result<HostRequestPermit, Error> {
-        let host = host.and_then(normalize_host_key);
+    ) -> Result<Option<OwnedSemaphorePermit>, Error> {
+        let host = if self.per_host_limit.is_some() {
+            host.and_then(normalize_host_key)
+        } else {
+            None
+        };
         let permit = match (self.per_host_limit, host) {
             (Some(limit), Some(host)) => {
                 let wait_for_semaphore = {
@@ -110,9 +101,7 @@ impl RequestLimiters {
                     entry.last_used_at = now;
                     match Arc::clone(&entry.semaphore).try_acquire_owned() {
                         Ok(permit) => {
-                            return Ok(HostRequestPermit {
-                                _permit: Some(permit),
-                            });
+                            return Ok(Some(permit));
                         }
                         Err(TryAcquireError::NoPermits) => Arc::clone(&entry.semaphore),
                         Err(TryAcquireError::Closed) => {
@@ -130,7 +119,7 @@ impl RequestLimiters {
             _ => None,
         };
 
-        Ok(HostRequestPermit { _permit: permit })
+        Ok(permit)
     }
 }
 
@@ -165,28 +154,6 @@ mod tests {
         let entries = lock_unpoisoned(&limiters.per_host);
         assert!(entries.contains_key("api.example.com"));
         assert_eq!(entries.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn zero_limits_are_normalized_to_one_permit() {
-        let limiters = RequestLimiters::new(
-            Some(0),
-            Some(0),
-            Arc::new(crate::core::extensions::SystemClock),
-        )
-        .expect("limiters should be built");
-
-        let _global = tokio::time::timeout(Duration::from_millis(50), limiters.acquire_global())
-            .await
-            .expect("zero global limit should be normalized")
-            .expect("global permit should be acquired");
-        let _host = tokio::time::timeout(
-            Duration::from_millis(50),
-            limiters.acquire_host(Some("api")),
-        )
-        .await
-        .expect("zero host limit should be normalized")
-        .expect("host permit should be acquired");
     }
 
     #[test]

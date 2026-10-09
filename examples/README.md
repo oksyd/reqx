@@ -54,7 +54,7 @@ Note: examples that perform real HTTP calls use `https://postman-echo.com`.
 | `interceptor_redirect.rs` | Interceptor lifecycle hooks + redirect policy                     | `cargo run --example interceptor_redirect`                                             |
 | `blocking_basic.rs`       | Blocking request flow with sync transport                         | `cargo run --example blocking_basic --no-default-features -F blocking-tls-rustls-ring` |
 | `blocking_streaming.rs`   | Blocking reader upload + writer download helpers                  | `cargo run --example blocking_streaming --no-default-features -F blocking-tls-rustls-ring` |
-| `resumable_upload.rs`     | Async resumable multipart upload with persisted checkpoint         | `cargo run --example resumable_upload`                                                   |
+| `resumable_upload.rs`     | Async resumable multipart upload with persisted checkpoint         | `cargo run --example resumable_upload --no-default-features --features resumable-upload-async`                                                   |
 
 ## Feature-Specific TLS Runs
 

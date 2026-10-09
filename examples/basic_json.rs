@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::builder("https://postman-echo.com")
         .client_name("reqx-example-basic")
         .request_timeout(Duration::from_secs(3))
-        .total_timeout(Duration::from_secs(10))
+        .total_timeout(Some(Duration::from_secs(10)))
         .retry_policy(
             RetryPolicy::standard()
                 .max_attempts(3)

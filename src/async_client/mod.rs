@@ -3,19 +3,20 @@ use std::time::Duration;
 
 use http::HeaderMap;
 
-use crate::core::extensions::{BackoffSource, BodyCodec, Clock, EndpointSelector};
+use crate::core::extensions::{BackoffSource, Clock, EndpointSelector};
 use crate::core::metrics::ClientMetrics;
 use crate::core::observe::Observer;
-use crate::core::policy::{Interceptor, RedirectPolicy, StatusPolicy};
+use crate::core::policy::Interceptor;
 use crate::core::proxy::ProxyConfig;
-use crate::core::retry::{RetryEligibility, RetryPolicy};
+use crate::core::request_builder::RequestExecutionOptions;
+use crate::core::retry::RetryEligibility;
 use crate::rate_limit::{RateLimiter, ServerThrottleScope};
 use crate::resilience::{CircuitBreaker, RetryBudget};
 use crate::tls::TlsBackend;
 
 mod adaptive;
 mod body;
-mod builder;
+pub(crate) mod builder;
 mod client;
 mod dns;
 pub(crate) mod limiters;
@@ -42,32 +43,33 @@ use transport::TransportClient;
     )))
 )]
 /// Reusable async HTTP client for SDK transports.
+///
+/// Cloning a client is cheap and shares its connection pool, configuration,
+/// metrics and concurrency/resilience controls. Reuse a client across requests.
 pub struct Client {
+    inner: Arc<ClientInner>,
+}
+
+struct ClientInner {
     base_url: String,
     default_headers: HeaderMap,
+    request_defaults: RequestExecutionOptions,
     buffered_auto_accept_encoding: bool,
     stream_auto_accept_encoding: bool,
-    request_timeout: Duration,
-    total_timeout: Option<Duration>,
     stream_deadline_slack: Duration,
-    max_response_body_bytes: usize,
-    retry_policy: RetryPolicy,
     retry_eligibility: Arc<dyn RetryEligibility>,
     retry_budget: Option<Arc<RetryBudget>>,
     circuit_breaker: Option<Arc<CircuitBreaker>>,
     adaptive_concurrency: Option<Arc<AdaptiveConcurrencyController>>,
     rate_limiter: Option<Arc<RateLimiter>>,
     server_throttle_scope: ServerThrottleScope,
-    redirect_policy: RedirectPolicy,
-    default_status_policy: StatusPolicy,
     client_name: String,
     tls_backend: TlsBackend,
     proxy_config: Option<ProxyConfig>,
     transport: TransportClient,
-    endpoint_selector: Arc<dyn EndpointSelector>,
-    body_codec: Arc<dyn BodyCodec>,
+    endpoint_selector: Option<Arc<dyn EndpointSelector>>,
     clock: Arc<dyn Clock>,
-    backoff_source: Arc<dyn BackoffSource>,
+    backoff_source: Option<Arc<dyn BackoffSource>>,
     request_limiters: Option<RequestLimiters>,
     metrics: ClientMetrics,
     interceptors: Vec<Arc<dyn Interceptor>>,

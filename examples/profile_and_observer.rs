@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use reqx::advanced::{ClientProfile, Observer, RequestContext, RetryDecision, StatusPolicy};
@@ -37,9 +38,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::builder("https://postman-echo.com")
         .profile(ClientProfile::StandardSdk)
         .request_timeout(Duration::from_secs(3))
-        .total_timeout(Duration::from_secs(8))
+        .total_timeout(Some(Duration::from_secs(8)))
         .default_status_policy(StatusPolicy::Response)
-        .observer(ConsoleObserver)
+        .observer(Arc::new(ConsoleObserver))
         .build()?;
 
     let response = client.get("/status/404").send().await?;

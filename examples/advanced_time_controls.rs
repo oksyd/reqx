@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use reqx::advanced::Clock;
@@ -20,9 +21,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::builder("https://postman-echo.com")
         .client_name("reqx-example-advanced-time")
         .request_timeout(Duration::from_secs(2))
-        .total_timeout(Duration::from_secs(6))
+        .total_timeout(Some(Duration::from_secs(6)))
         .stream_deadline_slack(Duration::from_millis(25))
-        .control_clock(PassthroughClock)
+        .control_clock(Arc::new(PassthroughClock))
         .retry_policy(RetryPolicy::disabled())
         .build()?;
 

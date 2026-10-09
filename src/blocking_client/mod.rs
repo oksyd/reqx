@@ -2,49 +2,32 @@ use std::io::Read;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use bytes::Bytes;
-use http::{HeaderMap, Uri};
+use http::HeaderMap;
 
-use crate::core::extensions::{
-    BackoffSource, BodyCodec, Clock, EndpointSelector, OtelPathNormalizer,
-};
+use crate::core::extensions::{BackoffSource, Clock, EndpointSelector};
 use crate::core::metrics::ClientMetrics;
 use crate::core::observe::Observer;
-use crate::core::policy::{Interceptor, RedirectPolicy, StatusPolicy};
-use crate::core::proxy::{NoProxyRule, ProxyConfig};
-use crate::core::retry::{RetryEligibility, RetryPolicy};
+use crate::core::policy::Interceptor;
+use crate::core::proxy::ProxyConfig;
+use crate::core::request_builder::RequestExecutionOptions;
+use crate::core::retry::RetryEligibility;
 use crate::core::util::lock_unpoisoned;
-use crate::rate_limit::{RateLimitPolicy, RateLimiter, ServerThrottleScope};
+use crate::rate_limit::{RateLimiter, ServerThrottleScope};
 use crate::resilience::{
     AdaptiveConcurrencyOutcome, AdaptiveConcurrencyPolicy, AdaptiveConcurrencyState,
-    CircuitBreaker, CircuitBreakerPolicy, RetryBudget, RetryBudgetPolicy,
+    CircuitBreaker, RetryBudget,
 };
-use crate::tls::{TlsBackend, TlsOptions};
+use crate::tls::TlsBackend;
 
-mod builder;
+pub(crate) mod builder;
 mod dns;
 mod execute;
 pub(crate) mod limiters;
 mod request;
 pub(crate) mod transport;
-#[cfg(any(
-    feature = "blocking-tls-rustls-ring",
-    feature = "blocking-tls-rustls-aws-lc-rs",
-    feature = "blocking-tls-rustls-graviola",
-    feature = "blocking-tls-rustls-no-provider"
-))]
-mod ureq_compat;
-
 use crate::blocking_client::limiters::RequestLimiters;
+pub use builder::ClientBuilder;
 pub use request::RequestBuilder;
-
-const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const DEFAULT_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
-const DEFAULT_POOL_MAX_IDLE_PER_HOST: usize = 8;
-const DEFAULT_POOL_MAX_IDLE_CONNECTIONS: usize = 16;
-const DEFAULT_CLIENT_NAME: &str = "reqx";
-const DEFAULT_MAX_RESPONSE_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 struct AdaptiveConcurrencyController {
     policy: AdaptiveConcurrencyPolicy,
@@ -55,7 +38,6 @@ struct AdaptiveConcurrencyController {
 
 impl AdaptiveConcurrencyController {
     fn new(policy: AdaptiveConcurrencyPolicy, clock: Arc<dyn Clock>) -> Self {
-        let policy = policy.normalize_for_runtime();
         Self {
             policy,
             state: Mutex::new(AdaptiveConcurrencyState::new(policy)),
@@ -127,7 +109,9 @@ impl AdaptiveConcurrencyPermit {
             .now_monotonic()
             .saturating_duration_since(self.started_at)
     }
+}
 
+impl crate::core::execution::AttemptOutcome for AdaptiveConcurrencyPermit {
     fn mark_success(mut self) {
         self.controller
             .release_and_record(AdaptiveConcurrencyOutcome::Success, self.latency());
@@ -150,79 +134,17 @@ impl Drop for AdaptiveConcurrencyPermit {
     fn drop(&mut self) {
         if !self.completed {
             self.controller.release_without_record();
-            self.completed = true;
         }
     }
 }
 
-enum RequestBody {
-    Buffered(Bytes),
-    Reader(Box<dyn Read + Send>),
-}
+type RequestBody = crate::core::request_body::RequestBody<Box<dyn Read + Send>>;
 
-impl RequestBody {
-    fn empty() -> Self {
-        Self::Buffered(Bytes::new())
-    }
-}
-
-/// Builds a blocking [`Client`] with transport, timeout, retry, TLS, and
-/// observability settings.
-#[cfg_attr(
-    docsrs,
-    doc(cfg(any(
-        feature = "blocking-tls-rustls-ring",
-        feature = "blocking-tls-rustls-aws-lc-rs",
-        feature = "blocking-tls-rustls-graviola",
-        feature = "blocking-tls-rustls-no-provider",
-        feature = "blocking-tls-native"
-    )))
-)]
-pub struct ClientBuilder {
-    base_url: String,
-    default_headers: HeaderMap,
-    buffered_auto_accept_encoding: bool,
-    stream_auto_accept_encoding: bool,
-    request_timeout: Duration,
-    total_timeout: Option<Duration>,
-    stream_deadline_slack: Duration,
-    max_response_body_bytes: usize,
-    connect_timeout: Duration,
-    pool_idle_timeout: Duration,
-    pool_max_idle_per_host: usize,
-    pool_max_idle_connections: usize,
-    http_proxy: Option<Uri>,
-    dns_overrides: crate::core::dns::DnsOverridesBuilder,
-    proxy_authorization: Option<http::HeaderValue>,
-    no_proxy_rules: Vec<NoProxyRule>,
-    invalid_no_proxy_rules: Vec<String>,
-    retry_policy: RetryPolicy,
-    retry_eligibility: Arc<dyn RetryEligibility>,
-    retry_budget_policy: Option<RetryBudgetPolicy>,
-    circuit_breaker_policy: Option<CircuitBreakerPolicy>,
-    adaptive_concurrency_policy: Option<AdaptiveConcurrencyPolicy>,
-    global_rate_limit_policy: Option<RateLimitPolicy>,
-    per_host_rate_limit_policy: Option<RateLimitPolicy>,
-    server_throttle_scope: ServerThrottleScope,
-    redirect_policy: RedirectPolicy,
-    default_status_policy: StatusPolicy,
-    tls_backend: TlsBackend,
-    tls_options: TlsOptions,
-    endpoint_selector: Arc<dyn EndpointSelector>,
-    body_codec: Arc<dyn BodyCodec>,
-    clock: Arc<dyn Clock>,
-    backoff_source: Arc<dyn BackoffSource>,
-    client_name: String,
-    max_in_flight: Option<usize>,
-    max_in_flight_per_host: Option<usize>,
-    metrics_enabled: bool,
-    otel_enabled: bool,
-    otel_path_normalizer: Arc<dyn OtelPathNormalizer>,
-    interceptors: Vec<Arc<dyn Interceptor>>,
-    observers: Vec<Arc<dyn Observer>>,
-}
-
+#[derive(Clone)]
 /// Reusable blocking HTTP client for SDK transports.
+///
+/// Cloning a client is cheap and shares its connection pool, configuration,
+/// metrics and concurrency/resilience controls. Reuse a client across threads.
 #[cfg_attr(
     docsrs,
     doc(cfg(any(
@@ -234,30 +156,28 @@ pub struct ClientBuilder {
     )))
 )]
 pub struct Client {
+    inner: Arc<ClientInner>,
+}
+
+struct ClientInner {
     base_url: String,
     default_headers: HeaderMap,
+    request_defaults: RequestExecutionOptions,
     buffered_auto_accept_encoding: bool,
     stream_auto_accept_encoding: bool,
-    request_timeout: Duration,
-    total_timeout: Option<Duration>,
     stream_deadline_slack: Duration,
-    max_response_body_bytes: usize,
-    retry_policy: RetryPolicy,
     retry_eligibility: Arc<dyn RetryEligibility>,
     retry_budget: Option<Arc<RetryBudget>>,
     circuit_breaker: Option<Arc<CircuitBreaker>>,
     adaptive_concurrency: Option<Arc<AdaptiveConcurrencyController>>,
     rate_limiter: Option<Arc<RateLimiter>>,
     server_throttle_scope: ServerThrottleScope,
-    redirect_policy: RedirectPolicy,
-    default_status_policy: StatusPolicy,
     tls_backend: TlsBackend,
     transport: transport::TransportAgents,
     proxy_config: Option<ProxyConfig>,
-    endpoint_selector: Arc<dyn EndpointSelector>,
-    body_codec: Arc<dyn BodyCodec>,
+    endpoint_selector: Option<Arc<dyn EndpointSelector>>,
     clock: Arc<dyn Clock>,
-    backoff_source: Arc<dyn BackoffSource>,
+    backoff_source: Option<Arc<dyn BackoffSource>>,
     connect_timeout: Duration,
     request_limiters: Option<RequestLimiters>,
     metrics: ClientMetrics,

@@ -17,8 +17,8 @@ use flate2::{Compression, write::GzEncoder};
 use futures_util::stream;
 use http::header::{CONTENT_LENGTH, HeaderName, HeaderValue, TRANSFER_ENCODING, USER_AGENT};
 use reqx::advanced::{
-    AdaptiveConcurrencyPolicy, BodyCodec, CircuitBreakerPolicy, Clock, Interceptor, Observer,
-    RateLimitPolicy, RequestContext, RetryBudgetPolicy, ServerThrottleScope, StatusPolicy,
+    AdaptiveConcurrencyPolicy, CircuitBreakerPolicy, Clock, Interceptor, Observer, RateLimitPolicy,
+    RequestContext, RetryBudgetPolicy, ServerThrottleScope, StatusPolicy,
 };
 use reqx::prelude::{Client, Error, RedirectPolicy, RetryPolicy};
 use reqx::{ErrorCode, TimeoutPhase};
@@ -88,14 +88,6 @@ struct CapturedRequest {
 }
 
 #[derive(Debug)]
-struct SlowBodyCodec {
-    delay: Duration,
-}
-
-#[derive(Debug)]
-struct OversizedBodyCodec;
-
-#[derive(Debug)]
 struct FastForwardClock;
 
 impl Clock for FastForwardClock {
@@ -105,33 +97,6 @@ impl Clock for FastForwardClock {
 
     fn now_monotonic(&self) -> Instant {
         Instant::now() + Duration::from_secs(3_600)
-    }
-}
-
-impl BodyCodec for SlowBodyCodec {
-    fn decode_response_body_limited(
-        &self,
-        body: Bytes,
-        _headers: &http::HeaderMap,
-        _max_response_body_bytes: usize,
-        _method: &http::Method,
-        _uri: &str,
-    ) -> Result<Bytes, Error> {
-        thread::sleep(self.delay);
-        Ok(body)
-    }
-}
-
-impl BodyCodec for OversizedBodyCodec {
-    fn decode_response_body_limited(
-        &self,
-        _body: Bytes,
-        _headers: &http::HeaderMap,
-        _max_response_body_bytes: usize,
-        _method: &http::Method,
-        _uri: &str,
-    ) -> Result<Bytes, Error> {
-        Ok(Bytes::from_static(b"oversized"))
     }
 }
 
@@ -1632,7 +1597,6 @@ async fn json_helper_replaces_stale_content_length_from_previous_body() {
     let response = client
         .post("/v1/json")
         .body_reader_with_length(tokio::io::empty(), 1)
-        .expect("reader content-length should parse")
         .json(&payload)
         .expect("json serialization should succeed")
         .send()
@@ -1710,7 +1674,6 @@ async fn body_stream_replaces_stale_content_length_from_previous_reader_body() {
     let response = client
         .post("/v1/upload")
         .body_reader_with_length(tokio::io::empty(), 1)
-        .expect("reader content-length should parse")
         .body_stream(body_stream)
         .send()
         .await
@@ -1783,7 +1746,6 @@ async fn body_reader_replaces_stale_helper_content_length() {
     client
         .post("/v1/upload")
         .body_reader_with_length(tokio::io::empty(), 1)
-        .expect("reader content-length should parse")
         .body_reader(&b"streamed"[..])
         .send()
         .await
@@ -1942,7 +1904,7 @@ async fn interceptor_cannot_introduce_ambiguous_content_length() {
     let client = Client::builder("http://127.0.0.1:9")
         .request_timeout(Duration::from_millis(300))
         .retry_policy(RetryPolicy::disabled())
-        .interceptor(DuplicateContentLengthInterceptor)
+        .interceptor(Arc::new(DuplicateContentLengthInterceptor))
         .build()
         .expect("client should build");
 
@@ -2003,11 +1965,11 @@ async fn global_rate_limit_applies_between_parallel_requests() {
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_millis(400))
         .retry_policy(RetryPolicy::disabled())
-        .global_rate_limit_policy(
+        .global_rate_limit_policy(Some(
             RateLimitPolicy::standard()
                 .requests_per_second(20.0)
                 .burst(1),
-        )
+        ))
         .build()
         .expect("client should build");
 
@@ -2046,7 +2008,7 @@ async fn status_retry_backoff_releases_per_host_in_flight_slot() {
         ),
     ]);
     let client = Client::builder(server.base_url.clone())
-        .max_in_flight_per_host(1)
+        .max_in_flight_per_host(Some(1))
         .request_timeout(Duration::from_secs(2))
         .retry_policy(
             RetryPolicy::standard()
@@ -2108,11 +2070,11 @@ async fn retry_after_429_backpressures_following_request() {
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_millis(400))
         .retry_policy(RetryPolicy::disabled())
-        .global_rate_limit_policy(
+        .global_rate_limit_policy(Some(
             RateLimitPolicy::standard()
                 .requests_per_second(500.0)
                 .burst(50),
-        )
+        ))
         .build()
         .expect("client should build");
 
@@ -2159,16 +2121,16 @@ async fn retry_after_429_auto_scope_throttles_same_host_only() {
     let client = Client::builder(server_a.base_url.clone())
         .request_timeout(Duration::from_secs(2))
         .retry_policy(RetryPolicy::disabled())
-        .global_rate_limit_policy(
+        .global_rate_limit_policy(Some(
             RateLimitPolicy::standard()
                 .requests_per_second(500.0)
                 .burst(50),
-        )
-        .per_host_rate_limit_policy(
+        ))
+        .per_host_rate_limit_policy(Some(
             RateLimitPolicy::standard()
                 .requests_per_second(500.0)
                 .burst(50),
-        )
+        ))
         .build()
         .expect("client should build");
 
@@ -2227,16 +2189,16 @@ async fn retry_after_429_global_scope_backpressures_other_hosts() {
     let client = Client::builder(server_a.base_url.clone())
         .request_timeout(Duration::from_secs(2))
         .retry_policy(RetryPolicy::disabled())
-        .global_rate_limit_policy(
+        .global_rate_limit_policy(Some(
             RateLimitPolicy::standard()
                 .requests_per_second(500.0)
                 .burst(50),
-        )
-        .per_host_rate_limit_policy(
+        ))
+        .per_host_rate_limit_policy(Some(
             RateLimitPolicy::standard()
                 .requests_per_second(500.0)
                 .burst(50),
-        )
+        ))
         .server_throttle_scope(ServerThrottleScope::Global)
         .build()
         .expect("client should build");
@@ -2281,18 +2243,18 @@ async fn retry_after_429_observer_receives_resolved_scope() {
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_secs(2))
         .retry_policy(RetryPolicy::disabled())
-        .global_rate_limit_policy(
+        .global_rate_limit_policy(Some(
             RateLimitPolicy::standard()
                 .requests_per_second(500.0)
                 .burst(50),
-        )
-        .per_host_rate_limit_policy(
+        ))
+        .per_host_rate_limit_policy(Some(
             RateLimitPolicy::standard()
                 .requests_per_second(500.0)
                 .burst(50),
-        )
+        ))
         .server_throttle_scope(ServerThrottleScope::Auto)
-        .observer(observer)
+        .observer(Arc::new(observer))
         .build()
         .expect("client should build");
 
@@ -2328,7 +2290,7 @@ async fn retry_after_429_observer_receives_scope_without_rate_limiter() {
         .request_timeout(Duration::from_secs(2))
         .retry_policy(RetryPolicy::disabled())
         .server_throttle_scope(ServerThrottleScope::Auto)
-        .observer(observer)
+        .observer(Arc::new(observer))
         .build()
         .expect("client should build");
 
@@ -2399,7 +2361,7 @@ async fn response_body_timeout_maps_to_deadline_exceeded_when_total_timeout_is_e
     );
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_millis(400))
-        .total_timeout(Duration::from_millis(120))
+        .total_timeout(Some(Duration::from_millis(120)))
         .retry_policy(RetryPolicy::disabled())
         .build()
         .expect("client should build");
@@ -2413,74 +2375,6 @@ async fn response_body_timeout_maps_to_deadline_exceeded_when_total_timeout_is_e
         Error::DeadlineExceeded { method, uri, .. } => {
             assert_eq!(method.as_str(), "GET");
             assert!(uri.contains("/slow-body-total-timeout"));
-        }
-        other => panic!("unexpected error variant: {other}"),
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn buffered_response_decode_honors_total_timeout_deadline() {
-    support::install_crypto_provider();
-    let server = MockServer::start(vec![MockResponse::new(
-        200,
-        vec![("Content-Type", "application/json")],
-        r#"{"ok":true}"#,
-        Duration::ZERO,
-    )]);
-    let client = Client::builder(server.base_url.clone())
-        .request_timeout(Duration::from_millis(500))
-        .total_timeout(Duration::from_millis(60))
-        .body_codec(SlowBodyCodec {
-            delay: Duration::from_millis(120),
-        })
-        .retry_policy(RetryPolicy::disabled())
-        .build()
-        .expect("client should build");
-
-    let error = client
-        .get("/slow-buffered-decode")
-        .send()
-        .await
-        .expect_err("slow buffered decode should honor total timeout");
-
-    match error {
-        Error::DeadlineExceeded { uri, .. } => {
-            assert!(uri.contains("/slow-buffered-decode"));
-        }
-        other => panic!("unexpected error variant: {other}"),
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn custom_body_codec_cannot_bypass_response_body_limit() {
-    support::install_crypto_provider();
-    let server = MockServer::start(vec![MockResponse::new(
-        200,
-        vec![("Content-Type", "application/octet-stream")],
-        "x",
-        Duration::ZERO,
-    )]);
-    let client = Client::builder(server.base_url.clone())
-        .max_response_body_bytes(4)
-        .body_codec(OversizedBodyCodec)
-        .retry_policy(RetryPolicy::disabled())
-        .build()
-        .expect("client should build");
-
-    let error = client
-        .get("/oversized-custom-codec")
-        .send()
-        .await
-        .expect_err("custom codec output should remain subject to the body limit");
-
-    match error {
-        Error::ResponseBodyTooLarge {
-            limit_bytes,
-            actual_bytes,
-            ..
-        } => {
-            assert_eq!(limit_bytes, 4);
-            assert_eq!(actual_bytes, 9);
         }
         other => panic!("unexpected error variant: {other}"),
     }
@@ -2611,7 +2505,7 @@ async fn send_stream_copy_to_writer_respects_total_timeout_deadline() {
     );
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_millis(400))
-        .total_timeout(Duration::from_millis(220))
+        .total_timeout(Some(Duration::from_millis(220)))
         .retry_policy(RetryPolicy::disabled())
         .build()
         .expect("client should build");
@@ -2645,7 +2539,7 @@ async fn send_stream_ready_body_after_total_timeout_returns_deadline_exceeded() 
     )]);
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_millis(500))
-        .total_timeout(Duration::from_millis(80))
+        .total_timeout(Some(Duration::from_millis(80)))
         .retry_policy(RetryPolicy::disabled())
         .build()
         .expect("client should build");
@@ -2679,9 +2573,9 @@ async fn send_stream_total_deadline_uses_runtime_clock_not_control_clock() {
         Duration::ZERO,
     )]);
     let client = Client::builder(server.base_url.clone())
-        .control_clock(FastForwardClock)
+        .control_clock(Arc::new(FastForwardClock))
         .request_timeout(Duration::from_millis(500))
-        .total_timeout(Duration::from_millis(500))
+        .total_timeout(Some(Duration::from_millis(500)))
         .retry_policy(RetryPolicy::disabled())
         .build()
         .expect("client should build");
@@ -2716,7 +2610,7 @@ async fn total_timeout_recomputes_transport_timeout_after_per_host_queue_wait() 
         ),
     ]);
     let client = Client::builder(server.base_url.clone())
-        .max_in_flight_per_host(1)
+        .max_in_flight_per_host(Some(1))
         .request_timeout(Duration::from_millis(1_000))
         .retry_policy(RetryPolicy::disabled())
         .build()
@@ -2734,7 +2628,7 @@ async fn total_timeout_recomputes_transport_timeout_after_per_host_queue_wait() 
         tokio::spawn(async move {
             client
                 .get("/queued-after-host-permit")
-                .total_timeout(Duration::from_millis(200))
+                .total_timeout(Some(Duration::from_millis(200)))
                 .send()
                 .await
         })
@@ -2771,7 +2665,7 @@ async fn send_stream_async_read_buffer_honors_total_timeout_deadline() {
     )]);
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_millis(500))
-        .total_timeout(Duration::from_millis(80))
+        .total_timeout(Some(Duration::from_millis(80)))
         .retry_policy(RetryPolicy::disabled())
         .build()
         .expect("client should build");
@@ -2822,7 +2716,7 @@ async fn send_stream_large_deadline_slack_does_not_shorten_total_timeout() {
     );
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_millis(400))
-        .total_timeout(Duration::from_millis(250))
+        .total_timeout(Some(Duration::from_millis(250)))
         .stream_deadline_slack(Duration::from_secs(5))
         .retry_policy(RetryPolicy::disabled())
         .build()
@@ -2854,7 +2748,7 @@ async fn send_stream_large_deadline_slack_does_not_reclassify_body_timeout() {
     );
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_millis(100))
-        .total_timeout(Duration::from_millis(500))
+        .total_timeout(Some(Duration::from_millis(500)))
         .stream_deadline_slack(Duration::from_millis(450))
         .retry_policy(RetryPolicy::disabled())
         .build()
@@ -3175,7 +3069,7 @@ async fn metrics_snapshot_is_noop_when_metrics_disabled() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn retry_budget_is_credited_by_non_retryable_send_response() {
+async fn retry_budget_is_credited_by_non_retryable_response_status_policy() {
     support::install_crypto_provider();
     let server = MockServer::start(vec![
         MockResponse::new(
@@ -3197,12 +3091,12 @@ async fn retry_budget_is_credited_by_non_retryable_send_response() {
                 .max_backoff(Duration::from_millis(1))
                 .jitter_ratio(0.0),
         )
-        .retry_budget_policy(
+        .retry_budget_policy(Some(
             RetryBudgetPolicy::standard()
                 .window(Duration::from_secs(60))
                 .retry_ratio(1.0)
                 .min_retries_per_window(0),
-        )
+        ))
         .request_timeout(Duration::from_millis(300))
         .build()
         .expect("client should build");
@@ -3227,12 +3121,12 @@ async fn retry_budget_is_credited_by_non_retryable_send_response() {
 async fn build_rejects_invalid_adaptive_concurrency_policy() {
     support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
-        .adaptive_concurrency_policy(
+        .adaptive_concurrency_policy(Some(
             AdaptiveConcurrencyPolicy::standard()
                 .min_limit(10)
                 .initial_limit(8)
                 .max_limit(5),
-        )
+        ))
         .build();
 
     let error = match result {
@@ -3307,7 +3201,7 @@ async fn build_rejects_invalid_retry_status_policy() {
 async fn build_rejects_invalid_retry_budget_policy() {
     support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
-        .retry_budget_policy(RetryBudgetPolicy::standard().retry_ratio(f64::NAN))
+        .retry_budget_policy(Some(RetryBudgetPolicy::standard().retry_ratio(f64::NAN)))
         .build();
 
     let error = match result {
@@ -3387,7 +3281,7 @@ async fn build_rejects_invalid_client_name() {
 async fn build_rejects_invalid_concurrency_limit_config() {
     support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
-        .max_in_flight_per_host(0)
+        .max_in_flight_per_host(Some(0))
         .build();
 
     let error = match result {
@@ -3462,7 +3356,7 @@ async fn request_validates_retry_policy_before_waiting_for_global_permit() {
         Duration::ZERO,
     )]);
     let client = Client::builder(server.base_url.clone())
-        .max_in_flight(1)
+        .max_in_flight(Some(1))
         .request_timeout(Duration::from_secs(1))
         .retry_policy(RetryPolicy::disabled())
         .metrics_enabled(true)
@@ -3477,7 +3371,7 @@ async fn request_validates_retry_policy_before_waiting_for_global_permit() {
 
     let error = client
         .get("/invalid-before-queue")
-        .total_timeout(Duration::from_millis(50))
+        .total_timeout(Some(Duration::from_millis(50)))
         .retry_policy(RetryPolicy::standard().status_retry_window(99, 2))
         .send()
         .await
@@ -3513,7 +3407,7 @@ async fn request_rejects_invalid_timeout_override() {
 
     let error = client
         .get("/invalid-timeout")
-        .total_timeout(Duration::ZERO)
+        .total_timeout(Some(Duration::ZERO))
         .send()
         .await
         .expect_err("invalid request timeout override should fail");
@@ -3535,11 +3429,66 @@ async fn request_rejects_invalid_timeout_override() {
     assert_eq!(server.served_count(), 0);
 }
 
+#[tokio::test]
+async fn request_deadlines_can_be_inherited_disabled_and_overridden() {
+    support::install_crypto_provider();
+    let short = Some(Duration::from_millis(40));
+    let long = Some(Duration::from_secs(1));
+    for streamed in [false, true] {
+        for (client_deadline, override_deadline, succeeds) in [
+            (short, None, false),
+            (short, Some(None), true),
+            (short, Some(long), true),
+            (None, None, true),
+            (None, Some(short), false),
+        ] {
+            let server = MockServer::start(vec![MockResponse::new(
+                200,
+                Vec::<(String, String)>::new(),
+                "ok",
+                Duration::from_millis(120),
+            )]);
+            let client = Client::builder(&server.base_url)
+                .request_timeout(Duration::from_secs(2))
+                .total_timeout(client_deadline)
+                .retry_policy(RetryPolicy::disabled())
+                .build()
+                .expect("client");
+            let request = client.get("/");
+            let request = match override_deadline {
+                Some(deadline) => request.total_timeout(deadline),
+                None => request,
+            };
+            let result = if streamed {
+                request
+                    .send_stream()
+                    .await
+                    .map(|response| response.status())
+            } else {
+                request.send().await.map(|response| response.status())
+            };
+            if succeeds {
+                assert_eq!(
+                    result.expect("effective deadline should allow response"),
+                    200
+                );
+            } else {
+                assert!(
+                    matches!(result, Err(Error::DeadlineExceeded { .. })),
+                    "effective deadline should expire: {result:?}"
+                );
+            }
+        }
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn build_rejects_invalid_circuit_breaker_policy() {
     support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
-        .circuit_breaker_policy(CircuitBreakerPolicy::standard().open_timeout(Duration::ZERO))
+        .circuit_breaker_policy(Some(
+            CircuitBreakerPolicy::standard().open_timeout(Duration::ZERO),
+        ))
         .build();
 
     let error = match result {
@@ -3568,7 +3517,9 @@ async fn build_rejects_invalid_circuit_breaker_policy() {
 async fn build_rejects_invalid_rate_limit_policy() {
     support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
-        .global_rate_limit_policy(RateLimitPolicy::standard().requests_per_second(f64::NAN))
+        .global_rate_limit_policy(Some(
+            RateLimitPolicy::standard().requests_per_second(f64::NAN),
+        ))
         .build();
 
     let error = match result {
@@ -3829,6 +3780,12 @@ async fn redirect_after_303_treats_dropped_stream_body_as_replayable() {
             Duration::ZERO,
         ),
         MockResponse::new(
+            503,
+            vec![("Content-Type", "text/plain")],
+            "retry",
+            Duration::ZERO,
+        ),
+        MockResponse::new(
             200,
             vec![("Content-Type", "text/plain")],
             "ok",
@@ -3836,33 +3793,47 @@ async fn redirect_after_303_treats_dropped_stream_body_as_replayable() {
         ),
     ]);
     let client = Client::builder(server.base_url.clone())
+        .metrics_enabled(true)
         .request_timeout(Duration::from_millis(300))
-        .retry_policy(RetryPolicy::disabled())
+        .retry_policy(
+            RetryPolicy::standard()
+                .max_attempts(2)
+                .base_backoff(Duration::from_millis(1))
+                .max_backoff(Duration::from_millis(1))
+                .jitter_ratio(0.0),
+        )
         .redirect_policy(RedirectPolicy::limited(3))
         .build()
         .expect("client should build");
 
     let response = client
         .post("/v1/old")
-        .body_stream(stream::once(async {
-            Ok::<Bytes, std::io::Error>(Bytes::from_static(b"payload"))
-        }))
+        .body_reader_with_length(&b"payload"[..], 7)
         .send()
         .await
-        .expect("redirect chain should keep following after 303 drops the body");
+        .expect("redirects and status retries should succeed after 303 drops the body");
 
     assert_eq!(response.status().as_u16(), 200);
     assert_eq!(response.text_lossy(), "ok");
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 4);
+    assert_eq!(requests[0].body, b"payload");
     assert_eq!(requests[0].method, "POST");
     assert_eq!(requests[1].method, "GET");
     assert_eq!(requests[2].method, "GET");
     assert_eq!(requests[1].path, "/v1/middle");
     assert_eq!(requests[2].path, "/v1/final");
-    assert!(requests[1].body.is_empty());
-    assert!(requests[2].body.is_empty());
+    assert_eq!(requests[3].method, "GET");
+    assert_eq!(requests[3].path, "/v1/final");
+    for request in &requests[1..] {
+        assert!(request.body.is_empty());
+        assert_ne!(
+            request.headers.get("content-length").map(String::as_str),
+            Some("7")
+        );
+    }
+    assert_eq!(client.metrics_snapshot().requests.retries, 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4158,7 +4129,7 @@ async fn interceptor_cannot_leave_post_retryable_after_removing_idempotency_key(
                 .max_backoff(Duration::from_millis(1))
                 .jitter_ratio(0.0),
         )
-        .interceptor(IdempotencyKeyRemovingInterceptor)
+        .interceptor(Arc::new(IdempotencyKeyRemovingInterceptor))
         .build()
         .expect("client should build");
 
@@ -4202,7 +4173,7 @@ async fn interceptor_can_mutate_headers_and_observe_lifecycle() {
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_millis(300))
         .retry_policy(RetryPolicy::disabled())
-        .interceptor_arc(interceptor)
+        .interceptor(interceptor)
         .build()
         .expect("client should build");
 
@@ -4247,7 +4218,7 @@ async fn interceptor_on_error_is_invoked_for_decode_failure() {
     let client = Client::builder(server.base_url.clone())
         .request_timeout(Duration::from_millis(300))
         .retry_policy(RetryPolicy::disabled())
-        .interceptor_arc(interceptor)
+        .interceptor(interceptor)
         .build()
         .expect("client should build");
 
@@ -4289,10 +4260,22 @@ async fn query_helpers_preserve_existing_wire_encoding() {
         client
             .get(&target)
             .query_pair("next", "a b+c")
+            .query_pairs([("dup", "one"), ("empty", "")])
+            .query(&[("dup", "two"), ("unicode", "中文"), ("symbol", "&=?#%")])
+            .expect("query serialization")
+            .query_pairs(std::iter::empty::<(&str, &str)>())
+            .query(&[] as &[(&str, &str)])
+            .expect("empty query serialization")
+            .query_pair("dup", "three")
             .send()
             .await
             .expect("request");
-        assert_eq!(server.requests()[0].path, format!("{path}&next=a+b%2Bc"));
+        assert_eq!(
+            server.requests()[0].path,
+            format!(
+                "{path}&next=a+b%2Bc&dup=one&empty=&dup=two&unicode=%E4%B8%AD%E6%96%87&symbol=%26%3D%3F%23%25&dup=three"
+            )
+        );
     }
 }
 
@@ -4322,4 +4305,180 @@ async fn range_requests_do_not_negotiate_compression() {
         Some("bytes=10-20")
     );
     assert!(!requests[0].headers.contains_key("accept-encoding"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn async_response_hooks_run_once_per_attempt_in_each_response_mode() {
+    support::install_crypto_provider();
+    for streamed in [false, true] {
+        for return_status in [false, true] {
+            for (status, retry) in [(200, false), (404, false), (429, false), (429, true)] {
+                let mut responses = vec![MockResponse::new(
+                    status,
+                    vec![("Retry-After", "0")],
+                    "payload",
+                    Duration::ZERO,
+                )];
+                if retry {
+                    responses.push(MockResponse::new(
+                        200,
+                        vec![("Content-Type", "text/plain")],
+                        "payload",
+                        Duration::ZERO,
+                    ));
+                }
+                let server = MockServer::start(responses);
+                let request_hits = Arc::new(AtomicUsize::new(0));
+                let response_hits = Arc::new(AtomicUsize::new(0));
+                let error_hits = Arc::new(AtomicUsize::new(0));
+                let throttle_scopes = Arc::new(Mutex::new(Vec::new()));
+                let client = Client::builder(&server.base_url)
+                    .retry_policy(
+                        RetryPolicy::standard()
+                            .max_attempts(if retry { 2 } else { 1 })
+                            .base_backoff(Duration::from_millis(1))
+                            .max_backoff(Duration::from_millis(1))
+                            .jitter_ratio(0.0),
+                    )
+                    .interceptor(Arc::new(HeaderInjectingInterceptor {
+                        request_hits: request_hits.clone(),
+                        response_hits: response_hits.clone(),
+                        error_hits: error_hits.clone(),
+                    }))
+                    .observer(Arc::new(ThrottleObserver {
+                        scopes: throttle_scopes.clone(),
+                    }))
+                    .default_status_policy(if return_status {
+                        StatusPolicy::Response
+                    } else {
+                        StatusPolicy::Error
+                    })
+                    .build()
+                    .expect("client should build");
+                let result = if streamed {
+                    match client.get("/").send_stream().await {
+                        Ok(stream) => {
+                            let status = stream.status().as_u16();
+                            stream
+                                .into_bytes_limited(32)
+                                .await
+                                .map(|body| (status, body))
+                        }
+                        Err(error) => Err(error),
+                    }
+                } else {
+                    client
+                        .get("/")
+                        .send()
+                        .await
+                        .map(|response| (response.status().as_u16(), response.body().clone()))
+                };
+                let expected_status = if retry { 200 } else { status };
+                let rejected = expected_status != 200 && !return_status;
+                if rejected {
+                    assert!(
+                        matches!(result, Err(Error::HttpStatus { status, .. }) if status == expected_status)
+                    );
+                } else {
+                    let (actual_status, body) = result.expect("response should be returned");
+                    assert_eq!(actual_status, expected_status);
+                    assert_eq!(body.as_ref(), b"payload");
+                }
+                let attempts = if retry { 2 } else { 1 };
+                assert_eq!(server.served_count(), attempts);
+                assert_eq!(request_hits.load(Ordering::SeqCst), attempts);
+                assert_eq!(response_hits.load(Ordering::SeqCst), attempts);
+                assert_eq!(error_hits.load(Ordering::SeqCst), usize::from(rejected));
+                assert_eq!(
+                    throttle_scopes.lock().expect("throttle scopes").len(),
+                    usize::from(status == 429)
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn configured_controls_can_be_disabled_before_building_client() {
+    support::install_crypto_provider();
+    let server = MockServer::start(vec![
+        MockResponse::new(
+            503,
+            vec![("Content-Type", "text/plain")],
+            "retry",
+            Duration::ZERO,
+        ),
+        MockResponse::new(
+            200,
+            vec![("Content-Type", "text/plain")],
+            "ok",
+            Duration::ZERO,
+        ),
+    ]);
+    let client = support::configure_then_disable_controls(Client::builder(server.base_url.clone()))
+        .total_timeout(Some(Duration::from_millis(500)))
+        .retry_policy(
+            RetryPolicy::standard()
+                .max_attempts(2)
+                .base_backoff(Duration::from_millis(1))
+                .jitter_ratio(0.0),
+        )
+        .metrics_enabled(true)
+        .build()
+        .expect("client without controls should build");
+
+    let response = client
+        .get("/disabled-controls")
+        .send()
+        .await
+        .expect("disabled controls must allow the retry");
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(server.requests().len(), 2);
+    assert_eq!(client.metrics_snapshot().requests.retries, 1);
+}
+
+#[cfg(feature = "compression-gzip")]
+#[tokio::test]
+async fn buffered_and_streamed_responses_share_bounded_content_decoding() {
+    support::install_crypto_provider();
+    let expanded = vec![b'x'; 2048];
+    let encoded = gzip_bytes(&expanded);
+    assert!(encoded.len() < 128);
+    let response = MockResponse::new_bytes(
+        200,
+        vec![("Content-Encoding", "gzip")],
+        encoded,
+        Duration::ZERO,
+    );
+    let server = MockServer::start(vec![response; 4]);
+    for limit in [128, 4096] {
+        let client = Client::builder(server.base_url.clone())
+            .max_response_body_bytes(limit)
+            .retry_policy(RetryPolicy::disabled())
+            .build()
+            .expect("client should build");
+        for streamed in [false, true] {
+            let result = if streamed {
+                client
+                    .get("/content-decoding")
+                    .send_stream()
+                    .await
+                    .expect("stream headers")
+                    .into_response_limited(limit)
+                    .await
+            } else {
+                client.get("/content-decoding").send().await
+            };
+            if limit < expanded.len() {
+                assert!(
+                    matches!(result, Err(Error::ResponseBodyTooLarge { limit_bytes, .. }) if limit_bytes == limit)
+                );
+            } else {
+                let response = result.expect("decoded response");
+                assert_eq!(response.body().as_ref(), expanded.as_slice());
+                assert!(!response.headers().contains_key("content-encoding"));
+                assert!(!response.headers().contains_key("content-length"));
+            }
+        }
+    }
 }

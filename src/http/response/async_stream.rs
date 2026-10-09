@@ -11,32 +11,17 @@ use serde::de::DeserializeOwned;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::time::Sleep;
 
-use crate::async_client::limiters::{GlobalRequestPermit, HostRequestPermit};
 use crate::core::content_encoding::{
     decode_content_encoded_body_limited, should_decode_content_encoded_body,
 };
 use crate::core::error::{Error, TimeoutPhase};
 use crate::core::util::{duration_from_millis_saturating, saturating_u64_to_usize};
+use tokio::sync::OwnedSemaphorePermit;
 
-use crate::core::execution::lifecycle::{self, StreamLifecycle};
+use crate::core::execution::lifecycle::StreamLifecycle;
 use crate::core::metrics::StreamCompletion;
 
 use super::{Response, deadline_elapsed, deadline_limits_wait, deadline_within_slack};
-
-#[derive(Debug)]
-pub(crate) struct StreamPermits {
-    global: Option<GlobalRequestPermit>,
-    host: Option<HostRequestPermit>,
-}
-
-impl StreamPermits {
-    pub(crate) fn new(
-        global: Option<GlobalRequestPermit>,
-        host: Option<HostRequestPermit>,
-    ) -> Self {
-        Self { global, host }
-    }
-}
 
 pub(crate) struct ResponseStreamContext {
     pub(crate) method: http::Method,
@@ -46,8 +31,9 @@ pub(crate) struct ResponseStreamContext {
     pub(crate) total_timeout_ms: Option<u128>,
     pub(crate) deadline_at: Option<Instant>,
     pub(crate) deadline_slack: Duration,
-    pub(crate) lifecycle: Option<StreamLifecycle>,
-    pub(crate) permits: StreamPermits,
+    pub(crate) lifecycle: StreamLifecycle,
+    pub(crate) global_permit: Option<OwnedSemaphorePermit>,
+    pub(crate) host_permit: Option<OwnedSemaphorePermit>,
 }
 
 struct StreamBody {
@@ -61,9 +47,9 @@ struct StreamBody {
     frame_timeout: Option<Pin<Box<Sleep>>>,
     frame_timeout_deadline_limited: bool,
     read_buffer: Bytes,
-    lifecycle: Option<StreamLifecycle>,
-    _global_permit: Option<GlobalRequestPermit>,
-    _host_permit: Option<HostRequestPermit>,
+    lifecycle: StreamLifecycle,
+    _global_permit: Option<OwnedSemaphorePermit>,
+    _host_permit: Option<OwnedSemaphorePermit>,
 }
 
 impl StreamBody {
@@ -77,7 +63,8 @@ impl StreamBody {
             deadline_at,
             deadline_slack,
             lifecycle,
-            permits,
+            global_permit,
+            host_permit,
         } = context;
         Self {
             inner: Some(inner),
@@ -91,13 +78,13 @@ impl StreamBody {
             frame_timeout_deadline_limited: false,
             read_buffer: Bytes::new(),
             lifecycle,
-            _global_permit: permits.global,
-            _host_permit: permits.host,
+            _global_permit: global_permit,
+            _host_permit: host_permit,
         }
     }
 
     fn attach_completion(&mut self, completion: StreamCompletion) {
-        lifecycle::attach_completion(&mut self.lifecycle, completion);
+        self.lifecycle.attach_completion(completion);
     }
 
     fn method(&self) -> &http::Method {
@@ -393,12 +380,12 @@ impl StreamBody {
 
     fn complete_success(&mut self) {
         self.release_transport();
-        lifecycle::complete_success(&mut self.lifecycle);
+        self.lifecycle.complete_success();
     }
 
     fn complete_error(&mut self, error: &Error) {
         self.release_transport();
-        lifecycle::complete_error(&mut self.lifecycle, error);
+        self.lifecycle.complete_error(error);
     }
 }
 
@@ -418,7 +405,7 @@ impl std::fmt::Debug for StreamBody {
                 &self.frame_timeout_deadline_limited,
             )
             .field("read_buffer_len", &self.read_buffer.len())
-            .field("has_lifecycle", &self.lifecycle.is_some())
+            .field("lifecycle", &self.lifecycle)
             .finish()
     }
 }
@@ -435,10 +422,10 @@ impl std::fmt::Debug for StreamBody {
 /// ```no_run
 /// # #[cfg(feature = "_async")]
 /// # async fn demo() -> reqx::Result<()> {
-/// use reqx::prelude::Client;
+/// use reqx::prelude::{Client, StatusPolicy};
 ///
 /// let client = Client::builder("https://api.example.com").build()?;
-/// let stream = client.get("/v1/logs").send_response_stream().await?;
+/// let stream = client.get("/v1/logs").status_policy(StatusPolicy::Response).send_stream().await?;
 /// let _body = stream.into_text_limited(64 * 1024).await?;
 /// # Ok(())
 /// # }
@@ -585,8 +572,7 @@ impl ResponseStream {
             match decode_content_encoded_body_limited(body, &self.headers, max_bytes) {
                 Ok(body) => body,
                 Err(error) => {
-                    let error =
-                        super::map_decode_body_error(error, &method, &uri_redacted, max_bytes);
+                    let error = error.into_error(&method, &uri_redacted, max_bytes);
                     self.body.complete_error(&error);
                     return Err(error);
                 }
@@ -609,13 +595,13 @@ impl ResponseStream {
     /// Buffers the stream as UTF-8 text, enforcing `max_bytes`.
     pub async fn into_text_limited(self, max_bytes: usize) -> crate::Result<String> {
         let response = self.into_response_limited(max_bytes).await?;
-        response.text().map(ToOwned::to_owned)
+        response.into_text()
     }
 
     /// Buffers the stream as lossy UTF-8 text, enforcing `max_bytes`.
     pub async fn into_text_lossy_limited(self, max_bytes: usize) -> crate::Result<String> {
         let response = self.into_response_limited(max_bytes).await?;
-        Ok(response.text_lossy())
+        Ok(response.into_text_lossy())
     }
 
     /// Buffers and deserializes the stream from JSON, enforcing `max_bytes`.

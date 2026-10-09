@@ -61,7 +61,9 @@ mod tests {
             .map(|last| SocketAddr::from((Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, last), 0)))
             .collect();
         let mut builder = crate::core::dns::DnsOverridesBuilder::default();
-        builder.insert("pinned.invalid", &addresses);
+        builder
+            .insert("pinned.invalid", &addresses)
+            .expect("valid DNS override");
         let resolver = OverrideResolver {
             overrides: builder.build(false).expect("valid overrides"),
             fallback: DefaultResolver::default(),

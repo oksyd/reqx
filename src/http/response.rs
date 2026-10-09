@@ -10,8 +10,6 @@ use std::io;
 #[cfg(any(feature = "_async", feature = "_blocking"))]
 use std::time::{Duration, Instant};
 
-#[cfg(any(feature = "_async", feature = "_blocking"))]
-use crate::core::content_encoding::DecodeContentEncodingError;
 use crate::core::error::Error;
 use crate::core::util::truncate_body;
 
@@ -71,6 +69,21 @@ impl Response {
         String::from_utf8_lossy(&self.body).into_owned()
     }
 
+    /// Consumes the response and decodes its body as UTF-8 text.
+    ///
+    /// Reuses the body allocation when it is uniquely owned and reusable.
+    pub fn into_text(self) -> crate::Result<String> {
+        String::from_utf8(self.body.into()).map_err(|source| Error::DecodeText {
+            source: source.utf8_error(),
+            body: truncate_body(source.as_bytes()),
+        })
+    }
+
+    /// Consumes the response and decodes its body as lossy UTF-8 text.
+    pub fn into_text_lossy(self) -> String {
+        String::from_utf8_lossy_owned(self.body.into())
+    }
+
     /// Deserializes the buffered body from JSON.
     pub fn json<T>(&self) -> crate::Result<T>
     where
@@ -82,9 +95,6 @@ impl Response {
         })
     }
 }
-
-#[cfg(any(feature = "_async", feature = "_blocking"))]
-pub(crate) const DEFAULT_STREAM_DEADLINE_SLACK: Duration = Duration::from_millis(10);
 
 #[cfg(any(feature = "_async", feature = "_blocking"))]
 pub(crate) fn deadline_elapsed(deadline_at: Instant, now: Instant) -> bool {
@@ -107,29 +117,6 @@ pub(crate) fn deadline_within_slack(
     deadline_slack: Duration,
 ) -> bool {
     deadline_at.saturating_duration_since(now) <= deadline_slack
-}
-
-#[cfg(any(feature = "_async", feature = "_blocking"))]
-pub(super) fn map_decode_body_error(
-    error: DecodeContentEncodingError,
-    method: &Method,
-    uri: &str,
-    max_bytes: usize,
-) -> Error {
-    match error {
-        DecodeContentEncodingError::Decode { encoding, message } => Error::DecodeContentEncoding {
-            encoding,
-            method: method.clone(),
-            uri: uri.to_owned(),
-            message,
-        },
-        DecodeContentEncodingError::TooLarge { actual_bytes } => Error::ResponseBodyTooLarge {
-            limit_bytes: max_bytes,
-            actual_bytes,
-            method: method.clone(),
-            uri: uri.to_owned(),
-        },
-    }
 }
 
 #[cfg(any(feature = "_async", feature = "_blocking"))]
@@ -222,7 +209,7 @@ mod blocking_stream;
 )]
 pub use async_stream::ResponseStream;
 #[cfg(feature = "_async")]
-pub(crate) use async_stream::{ResponseStreamContext, StreamPermits};
+pub(crate) use async_stream::ResponseStreamContext;
 #[cfg(feature = "_blocking")]
 #[cfg_attr(
     docsrs,

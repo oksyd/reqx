@@ -99,6 +99,7 @@ macro_rules! dns_suite {
             let url = format!("http://pinned.invalid:{}/resource", server.address.port());
             let client = <$client>::builder(&url)
                 .resolve_to_addrs("PINNED.INVALID.", &[dead, server.address])
+                .expect("valid DNS override")
                 .request_timeout(Duration::from_secs(2))
                 .retry_policy(RetryPolicy::disabled())
                 .build()
@@ -120,6 +121,7 @@ macro_rules! dns_suite {
         // With no explicit URL port, the address port is the connection port.
         let client = <$client>::builder("http://port.invalid")
             .resolve("port.invalid", server.address)
+            .expect("valid DNS override")
             .build()
             .expect("client");
         $await!(client.get("/").send()).expect("override port");
@@ -135,6 +137,7 @@ macro_rules! dns_suite {
             let client =
                 <$client>::builder(format!("http://explicit.invalid:{}", server.address.port()))
                     .resolve("explicit.invalid", address)
+                    .expect("valid DNS override")
                     .build()
                     .expect("client");
             $await!(client.get("/").send()).expect("explicit URL port");
@@ -144,6 +147,7 @@ macro_rules! dns_suite {
                 "localhost",
                 SocketAddr::from(([127, 0, 0, 2], server.address.port())),
             )
+            .expect("valid DNS override")
             .request_timeout(Duration::from_millis(200))
             .retry_policy(RetryPolicy::standard().max_attempts(2))
             .build()
@@ -156,6 +160,7 @@ macro_rules! dns_suite {
         assert_eq!(server.requests.lock().expect("requests").len(), before);
         let client = <$client>::builder(format!("http://localhost:{}", server.address.port()))
             .resolve("unrelated.invalid", server.address)
+            .expect("valid DNS override")
             .build()
             .expect("client");
         $await!(client.get("/").send()).expect("unconfigured host still uses system DNS");
@@ -171,7 +176,9 @@ macro_rules! dns_suite {
             );
             let client = <$client>::builder("http://source.invalid")
                 .resolve("source.invalid", source.address)
+                .expect("valid DNS override")
                 .resolve("target.invalid", destination.address)
+                .expect("valid DNS override")
                 .redirect_policy(RedirectPolicy::limited(2))
                 .build()
                 .expect("client");
@@ -180,17 +187,24 @@ macro_rules! dns_suite {
         }
         for addresses in [vec![], vec![server.address; 17]] {
             let result = <$client>::builder("http://example.com")
-                .resolve_to_addrs("example.com", &addresses)
-                .build();
+                .resolve_to_addrs("example.com", &addresses);
             assert!(matches!(
                 result,
                 Err(reqx::Error::InvalidDnsOverrideConfig { .. })
             ));
         }
+        for domain in ["https://example.com", "127.0.0.1", "bad name"] {
+            assert!(matches!(
+                <$client>::builder("http://example.com").resolve(domain, server.address),
+                Err(reqx::Error::InvalidDnsOverrideConfig { .. })
+            ));
+        }
         let result = <$client>::builder("http://example.com")
             .resolve("example.com", server.address)
+            .expect("valid DNS override")
             .http_proxy("http://proxy.invalid:8080".parse().expect("proxy URI"))
             .no_proxy(["*"])
+            .expect("valid no_proxy rules")
             .build();
         assert!(matches!(
             result,

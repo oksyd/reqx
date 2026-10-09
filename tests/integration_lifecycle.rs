@@ -83,6 +83,98 @@ impl Drop for Server {
 
 #[cfg(feature = "_async")]
 #[tokio::test]
+async fn async_client_clones_share_capacity_and_metrics_after_original_is_dropped() {
+    support::install_crypto_provider();
+    for per_host in [false, true] {
+        let server = Server::new(false);
+        let builder = reqx::Client::builder(&server.url)
+            .metrics_enabled(true)
+            .retry_policy(RetryPolicy::disabled());
+        let client = if per_host {
+            builder.max_in_flight_per_host(Some(1))
+        } else {
+            builder.max_in_flight(Some(1))
+        }
+        .build()
+        .expect("client");
+        let survivor = client.clone();
+        let blocked = survivor.clone();
+        let request = client.get("/");
+        drop(client);
+        let stream = request.send_stream().await.expect("stream headers");
+        assert_eq!(survivor.metrics_snapshot().requests.in_flight, 1);
+
+        let blocked_request = blocked
+            .get("/")
+            .total_timeout(Some(Duration::from_millis(30)));
+        drop(blocked);
+        let error = tokio::spawn(blocked_request.send())
+            .await
+            .expect("request task")
+            .expect_err("cloned clients must share capacity");
+        assert!(matches!(error, reqx::Error::DeadlineExceeded { .. }));
+
+        drop(stream);
+        assert_eq!(survivor.metrics_snapshot().requests.in_flight, 0);
+        let response = survivor.get("/").send().await.expect("released capacity");
+        assert_eq!(response.body().as_ref(), b"ok");
+        let metrics = survivor.metrics_snapshot();
+        assert_eq!(metrics.requests.started, 3);
+        assert_eq!(metrics.requests.succeeded, 1);
+        assert_eq!(metrics.requests.failed, 1);
+        assert_eq!(metrics.requests.canceled, 1);
+        assert_eq!(metrics.requests.in_flight, 0);
+    }
+}
+
+#[cfg(feature = "_blocking")]
+#[test]
+fn blocking_client_clones_share_capacity_and_metrics_after_original_is_dropped() {
+    support::install_crypto_provider();
+    for per_host in [false, true] {
+        let server = Server::new(false);
+        let builder = reqx::blocking::Client::builder(&server.url)
+            .metrics_enabled(true)
+            .retry_policy(RetryPolicy::disabled());
+        let client = if per_host {
+            builder.max_in_flight_per_host(Some(1))
+        } else {
+            builder.max_in_flight(Some(1))
+        }
+        .build()
+        .expect("client");
+        let survivor = client.clone();
+        let blocked = survivor.clone();
+        let request = client.get("/");
+        drop(client);
+        let stream = request.send_stream().expect("stream headers");
+        assert_eq!(survivor.metrics_snapshot().requests.in_flight, 1);
+
+        let blocked_request = blocked
+            .get("/")
+            .total_timeout(Some(Duration::from_millis(30)));
+        drop(blocked);
+        let error = std::thread::spawn(move || blocked_request.send())
+            .join()
+            .expect("request thread")
+            .expect_err("cloned clients must share capacity");
+        assert!(matches!(error, reqx::Error::DeadlineExceeded { .. }));
+
+        drop(stream);
+        assert_eq!(survivor.metrics_snapshot().requests.in_flight, 0);
+        let response = survivor.get("/").send().expect("released capacity");
+        assert_eq!(response.body().as_ref(), b"ok");
+        let metrics = survivor.metrics_snapshot();
+        assert_eq!(metrics.requests.started, 3);
+        assert_eq!(metrics.requests.succeeded, 1);
+        assert_eq!(metrics.requests.failed, 1);
+        assert_eq!(metrics.requests.canceled, 1);
+        assert_eq!(metrics.requests.in_flight, 0);
+    }
+}
+
+#[cfg(feature = "_async")]
+#[tokio::test]
 async fn async_stream_terminal_reads_release_global_and_host_capacity() {
     support::install_crypto_provider();
     use tokio::io::AsyncReadExt;
@@ -93,9 +185,9 @@ async fn async_stream_terminal_reads_release_global_and_host_capacity() {
                 .metrics_enabled(true)
                 .retry_policy(RetryPolicy::disabled());
             let client = if per_host {
-                builder.max_in_flight_per_host(1)
+                builder.max_in_flight_per_host(Some(1))
             } else {
-                builder.max_in_flight(1)
+                builder.max_in_flight(Some(1))
             }
             .build()
             .expect("client");
@@ -109,7 +201,7 @@ async fn async_stream_terminal_reads_release_global_and_host_capacity() {
             assert_eq!(result.is_err(), truncated);
             let next = client
                 .get("/")
-                .total_timeout(Duration::from_millis(200))
+                .total_timeout(Some(Duration::from_millis(200)))
                 .send()
                 .await;
             assert!(next.is_ok(), "completed stream retained capacity: {next:?}");
@@ -136,9 +228,9 @@ fn blocking_stream_terminal_reads_release_global_and_host_capacity() {
                 .metrics_enabled(true)
                 .retry_policy(RetryPolicy::disabled());
             let client = if per_host {
-                builder.max_in_flight_per_host(1)
+                builder.max_in_flight_per_host(Some(1))
             } else {
-                builder.max_in_flight(1)
+                builder.max_in_flight(Some(1))
             }
             .build()
             .expect("client");
@@ -148,7 +240,7 @@ fn blocking_stream_terminal_reads_release_global_and_host_capacity() {
             assert_eq!(result.is_err(), truncated);
             let next = client
                 .get("/")
-                .total_timeout(Duration::from_millis(200))
+                .total_timeout(Some(Duration::from_millis(200)))
                 .send();
             assert!(next.is_ok(), "completed stream retained capacity: {next:?}");
             assert_eq!(stream.read(&mut [0; 1]).expect("fused stream"), 0);
@@ -163,6 +255,74 @@ fn blocking_stream_terminal_reads_release_global_and_host_capacity() {
     }
 }
 
+#[cfg(feature = "_blocking")]
+#[test]
+fn blocking_callback_panic_records_cancellation_and_releases_capacity() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use reqx::advanced::{
+        AdaptiveConcurrencyPolicy, CircuitBreakerPolicy, Interceptor, RequestContext,
+    };
+
+    struct PanicOnce(AtomicBool);
+
+    impl Interceptor for PanicOnce {
+        fn on_request(&self, _context: &RequestContext, _headers: &mut http::HeaderMap) {
+            assert!(!self.0.swap(false, Ordering::Relaxed), "callback panic");
+        }
+    }
+
+    support::install_crypto_provider();
+    for streamed in [false, true] {
+        let server = Server::new(false);
+        let client = reqx::blocking::Client::builder(&server.url)
+            .metrics_enabled(true)
+            .max_in_flight(Some(1))
+            .max_in_flight_per_host(Some(1))
+            .adaptive_concurrency_policy(Some(
+                AdaptiveConcurrencyPolicy::standard()
+                    .min_limit(1)
+                    .initial_limit(1)
+                    .max_limit(1),
+            ))
+            .circuit_breaker_policy(Some(CircuitBreakerPolicy::standard().failure_threshold(1)))
+            .retry_policy(RetryPolicy::disabled())
+            .interceptor(Arc::new(PanicOnce(AtomicBool::new(true))))
+            .build()
+            .expect("client");
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            if streamed {
+                let _ = client.get("/panic").send_stream();
+            } else {
+                let _ = client.get("/panic").send();
+            }
+        }));
+        assert!(result.is_err());
+        let metrics = client.metrics_snapshot();
+        assert_eq!(metrics.requests.started, 1);
+        assert_eq!(metrics.requests.canceled, 1);
+        assert_eq!(metrics.requests.succeeded, 0);
+        assert_eq!(metrics.requests.failed, 0);
+        assert_eq!(metrics.requests.in_flight, 0);
+        assert_eq!(metrics.latency.samples, 1);
+
+        let response = client
+            .get("/after-panic")
+            .total_timeout(Some(Duration::from_millis(200)))
+            .send()
+            .expect("canceled request should release capacity and leave the circuit closed");
+        assert_eq!(response.body().as_ref(), b"ok");
+        let metrics = client.metrics_snapshot();
+        assert_eq!(metrics.requests.started, 2);
+        assert_eq!(metrics.requests.canceled, 1);
+        assert_eq!(metrics.requests.succeeded, 1);
+        assert_eq!(metrics.requests.failed, 0);
+        assert_eq!(metrics.requests.in_flight, 0);
+        assert_eq!(metrics.latency.samples, 2);
+    }
+}
+
 #[cfg(feature = "_async")]
 #[tokio::test]
 async fn canceling_queued_requests_records_completion_once() {
@@ -172,7 +332,7 @@ async fn canceling_queued_requests_records_completion_once() {
     for streamed in [false, true] {
         let server = Server::new(false);
         let client = reqx::Client::builder(&server.url)
-            .max_in_flight(1)
+            .max_in_flight(Some(1))
             .metrics_enabled(true)
             .retry_policy(RetryPolicy::disabled())
             .build()
@@ -255,7 +415,7 @@ async fn canceling_transport_and_buffered_body_records_completion_once() {
         });
         let headers_received = Arc::new(tokio::sync::Notify::new());
         let client = reqx::Client::builder(url)
-            .interceptor(HeadersReceived(headers_received.clone()))
+            .interceptor(Arc::new(HeadersReceived(headers_received.clone())))
             .metrics_enabled(true)
             .retry_policy(RetryPolicy::disabled())
             .build()
@@ -330,13 +490,13 @@ async fn async_stream_copy_deadline_covers_stalled_writes_and_flushes() {
             let server = Server::new(false);
             let client = reqx::Client::builder(&server.url)
                 .metrics_enabled(true)
-                .max_in_flight(1)
+                .max_in_flight(Some(1))
                 .retry_policy(RetryPolicy::disabled())
                 .build()
                 .expect("client");
             let stream = client
                 .get("/")
-                .total_timeout(Duration::from_millis(200))
+                .total_timeout(Some(Duration::from_millis(200)))
                 .send_stream()
                 .await
                 .expect("response headers");
@@ -364,7 +524,7 @@ async fn async_stream_copy_deadline_covers_stalled_writes_and_flushes() {
             );
             client
                 .get("/")
-                .total_timeout(Duration::from_millis(200))
+                .total_timeout(Some(Duration::from_millis(200)))
                 .send()
                 .await
                 .expect("timed out copy must release capacity");
@@ -393,13 +553,13 @@ fn blocking_stream_copy_reports_deadline_after_slow_flush() {
         let server = Server::new(false);
         let client = reqx::blocking::Client::builder(&server.url)
             .metrics_enabled(true)
-            .max_in_flight(1)
+            .max_in_flight(Some(1))
             .retry_policy(RetryPolicy::disabled())
             .build()
             .expect("client");
         let stream = client
             .get("/")
-            .total_timeout(Duration::from_millis(200))
+            .total_timeout(Some(Duration::from_millis(200)))
             .send_stream()
             .expect("response headers");
         let mut writer = SlowFlushWriter;
@@ -422,7 +582,7 @@ fn blocking_stream_copy_reports_deadline_after_slow_flush() {
         );
         client
             .get("/")
-            .total_timeout(Duration::from_millis(200))
+            .total_timeout(Some(Duration::from_millis(200)))
             .send()
             .expect("timed out copy must release capacity");
     }

@@ -103,7 +103,7 @@ mod enabled {
                 return;
             };
             let attributes = [
-                KeyValue::new("reqx.client", inner.client_name.to_string()),
+                KeyValue::new("reqx.client", Arc::clone(&inner.client_name)),
                 KeyValue::new("http.response.status_code", i64::from(status)),
             ];
             inner.requests_succeeded.add(1, &attributes);
@@ -114,8 +114,8 @@ mod enabled {
                 return;
             };
             let attributes = [
-                KeyValue::new("reqx.client", inner.client_name.to_string()),
-                KeyValue::new("error.type", error.code().as_str().to_owned()),
+                KeyValue::new("reqx.client", Arc::clone(&inner.client_name)),
+                KeyValue::new("error.type", error.code().as_str()),
             ];
             inner.requests_failed.add(1, &attributes);
         }
@@ -164,7 +164,7 @@ mod enabled {
                 .with_kind(SpanKind::Client)
                 .start(&inner.tracer);
             for attribute in request_span_attributes(
-                &inner.client_name,
+                Arc::clone(&inner.client_name),
                 inner.path_normalizer.as_ref(),
                 method,
                 uri,
@@ -221,13 +221,13 @@ mod enabled {
     }
 
     fn request_span_attributes(
-        client_name: &str,
+        client_name: Arc<str>,
         path_normalizer: &dyn OtelPathNormalizer,
         method: &Method,
         uri: &str,
     ) -> Vec<KeyValue> {
         let mut attributes = Vec::with_capacity(6);
-        attributes.push(KeyValue::new("reqx.client", client_name.to_owned()));
+        attributes.push(KeyValue::new("reqx.client", client_name));
         attributes.push(KeyValue::new(
             "http.request.method",
             method.as_str().to_owned(),
@@ -251,26 +251,24 @@ mod enabled {
         attributes
     }
 
-    fn error_span_attributes(error: &Error) -> Vec<KeyValue> {
-        let mut attributes = vec![KeyValue::new(
-            "error.type",
-            error.code().as_str().to_owned(),
-        )];
-        if let Error::HttpStatus { status, .. } = error {
-            attributes.push(KeyValue::new(
+    fn error_span_attributes(error: &Error) -> impl Iterator<Item = KeyValue> {
+        let status = if let Error::HttpStatus { status, .. } = error {
+            Some(KeyValue::new(
                 "http.response.status_code",
                 i64::from(*status),
-            ));
-        }
-        attributes
+            ))
+        } else {
+            None
+        };
+        std::iter::once(KeyValue::new("error.type", error.code().as_str())).chain(status)
     }
 
     fn error_span_status(error: &Error) -> Status {
-        Status::error(error.code().as_str().to_owned())
+        Status::error(error.code().as_str())
     }
 
     fn base_attributes(inner: &OtelInner) -> [KeyValue; 1] {
-        [KeyValue::new("reqx.client", inner.client_name.to_string())]
+        [KeyValue::new("reqx.client", Arc::clone(&inner.client_name))]
     }
 
     #[cfg(test)]
@@ -291,7 +289,7 @@ mod enabled {
         #[test]
         fn request_span_attributes_do_not_include_url_full() {
             let attributes = request_span_attributes(
-                "sdk",
+                "sdk".into(),
                 &FixedPathNormalizer,
                 &http::Method::GET,
                 "https://api.example.com/v1/orders/123?token=secret",
@@ -315,7 +313,7 @@ mod enabled {
         #[test]
         fn request_span_attributes_normalize_trailing_dot_server_address() {
             let attributes = request_span_attributes(
-                "sdk",
+                "sdk".into(),
                 &FixedPathNormalizer,
                 &http::Method::GET,
                 "https://api.example.com./v1/orders",
@@ -335,7 +333,7 @@ mod enabled {
                 method: http::Method::GET,
                 uri: "https://api.example.com/v1/items".to_owned(),
             };
-            let attributes = error_span_attributes(&error);
+            let attributes: Vec<_> = error_span_attributes(&error).collect();
             let keys = attributes
                 .iter()
                 .map(|item| item.key.as_str())
@@ -353,7 +351,7 @@ mod enabled {
                 headers: Box::new(http::HeaderMap::new()),
                 body: String::new(),
             };
-            let attributes = error_span_attributes(&error);
+            let attributes: Vec<_> = error_span_attributes(&error).collect();
             let status = attributes
                 .iter()
                 .find(|item| item.key.as_str() == "http.response.status_code")

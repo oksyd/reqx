@@ -17,7 +17,7 @@ fn blocking_response_stream_debug_omits_raw_uri_query() {
             total_timeout_ms: None,
             deadline_at: None,
             deadline_slack: Duration::from_millis(10),
-            lifecycle: None,
+            lifecycle: crate::core::execution::lifecycle::StreamLifecycle::default(),
             global_permit: None,
             host_permit: None,
         },

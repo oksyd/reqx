@@ -9,7 +9,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .client_name("reqx-example-concurrency")
         .request_timeout(Duration::from_secs(5))
         .retry_policy(RetryPolicy::disabled())
-        .max_in_flight(1)
+        .max_in_flight(Some(1))
         .build()?;
 
     let started = Instant::now();

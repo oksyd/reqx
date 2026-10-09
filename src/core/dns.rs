@@ -5,42 +5,36 @@ use std::sync::Arc;
 
 use crate::core::error::Error;
 
-// ureq 3.3.0 has a fixed-size resolver result. Keep the public limit identical
+// ureq has a fixed-size resolver result. Keep the public limit identical
 // across transports, and reject overflow before constructing either client.
 const MAX_ADDRESSES: usize = 16;
 
 #[derive(Default)]
 pub(crate) struct DnsOverridesBuilder {
     entries: BTreeMap<String, Vec<SocketAddr>>,
-    error: Option<&'static str>,
 }
 
 impl DnsOverridesBuilder {
-    pub(crate) fn insert(&mut self, domain: &str, addresses: &[SocketAddr]) {
-        let Some(domain) = normalize_domain(domain) else {
-            self.error.get_or_insert(
-                "override key must be a valid DNS hostname, not a URL or IP literal",
-            );
-            return;
-        };
+    pub(crate) fn insert(&mut self, domain: &str, addresses: &[SocketAddr]) -> crate::Result<()> {
+        let domain = normalize_domain(domain).ok_or(Error::InvalidDnsOverrideConfig {
+            message: "override key must be a valid DNS hostname, not a URL or IP literal",
+        })?;
         if addresses.is_empty() || addresses.len() > MAX_ADDRESSES {
-            self.error
-                .get_or_insert("each DNS override must contain between 1 and 16 addresses");
-            return;
+            return Err(Error::InvalidDnsOverrideConfig {
+                message: "each DNS override must contain between 1 and 16 addresses",
+            });
         }
-        let mut unique = Vec::new();
+        let mut unique = Vec::with_capacity(addresses.len());
         for address in addresses {
             if !unique.contains(address) {
                 unique.push(*address);
             }
         }
         self.entries.insert(domain, unique);
+        Ok(())
     }
 
     pub(crate) fn build(self, has_proxy: bool) -> crate::Result<DnsOverrides> {
-        if let Some(message) = self.error {
-            return Err(Error::InvalidDnsOverrideConfig { message });
-        }
         if has_proxy && !self.entries.is_empty() {
             return Err(Error::InvalidDnsOverrideConfig {
                 message: "DNS overrides cannot be combined with http_proxy, even with no_proxy rules",
@@ -119,10 +113,9 @@ mod tests {
             "%65xample.com",
         ] {
             let mut config = DnsOverridesBuilder::default();
-            config.insert(domain, &[address]);
             assert!(
                 matches!(
-                    config.build(false),
+                    config.insert(domain, &[address]),
                     Err(Error::InvalidDnsOverrideConfig { .. })
                 ),
                 "{domain}"
@@ -130,11 +123,12 @@ mod tests {
         }
         for addresses in [vec![], vec![address; 17]] {
             let mut config = DnsOverridesBuilder::default();
-            config.insert("example.com", &addresses);
-            assert!(config.build(false).is_err());
+            assert!(config.insert("example.com", &addresses).is_err());
         }
         let mut config = DnsOverridesBuilder::default();
-        config.insert("example.com", &[address]);
+        config
+            .insert("example.com", &[address])
+            .expect("valid override");
         assert!(config.build(true).is_err());
     }
 
@@ -143,9 +137,15 @@ mod tests {
         let first = SocketAddr::from(([127, 0, 0, 1], 1));
         let second = SocketAddr::from(([127, 0, 0, 1], 2));
         let mut config = DnsOverridesBuilder::default();
-        config.insert("EXAMPLE.COM.", &[first]);
-        config.insert("example.com", &[second, second]);
-        config.insert("bücher.example", &[first]);
+        config
+            .insert("EXAMPLE.COM.", &[first])
+            .expect("valid override");
+        config
+            .insert("example.com", &[second, second])
+            .expect("valid override");
+        config
+            .insert("bücher.example", &[first])
+            .expect("valid override");
         let overrides = config.build(false).expect("overrides");
         assert_eq!(overrides.lookup("EXAMPLE.COM."), Some([second].as_slice()));
         assert_eq!(

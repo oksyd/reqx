@@ -310,7 +310,7 @@ fn client_profile_and_direct_builder_overrides_compose() {
     let client = Client::builder("https://api.example.com")
         .profile(ClientProfile::LowLatency)
         .request_timeout(Duration::from_secs(4))
-        .total_timeout(Duration::from_secs(9))
+        .total_timeout(Some(Duration::from_secs(9)))
         .max_response_body_bytes(16 * 1024)
         .default_status_policy(StatusPolicy::Response)
         .build()
@@ -326,7 +326,7 @@ fn build_rejects_invalid_adaptive_concurrency_policy() {
         .initial_limit(8)
         .max_limit(5);
     let result = Client::builder("https://api.example.com")
-        .adaptive_concurrency_policy(policy)
+        .adaptive_concurrency_policy(Some(policy))
         .build();
     let error = match result {
         Ok(_) => panic!("invalid adaptive concurrency policy should fail"),
@@ -352,7 +352,7 @@ fn build_rejects_invalid_retry_budget_policy() {
     crate::test_support::install_crypto_provider();
     let policy = RetryBudgetPolicy::standard().window(Duration::ZERO);
     let result = Client::builder("https://api.example.com")
-        .retry_budget_policy(policy)
+        .retry_budget_policy(Some(policy))
         .build();
     let error = match result {
         Ok(_) => panic!("invalid retry budget policy should fail"),
@@ -378,7 +378,7 @@ fn build_rejects_invalid_retry_budget_policy() {
 fn build_rejects_invalid_concurrency_limit_config() {
     crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
-        .max_in_flight(0)
+        .max_in_flight(Some(0))
         .build();
     let error = match result {
         Ok(_) => panic!("invalid concurrency limit should fail"),
@@ -447,7 +447,7 @@ fn build_rejects_invalid_circuit_breaker_policy() {
     crate::test_support::install_crypto_provider();
     let policy = CircuitBreakerPolicy::standard().open_timeout(Duration::ZERO);
     let result = Client::builder("https://api.example.com")
-        .circuit_breaker_policy(policy)
+        .circuit_breaker_policy(Some(policy))
         .build();
     let error = match result {
         Ok(_) => panic!("invalid circuit breaker policy should fail"),
@@ -475,7 +475,7 @@ fn build_rejects_invalid_global_rate_limit_policy() {
     crate::test_support::install_crypto_provider();
     let policy = RateLimitPolicy::standard().requests_per_second(0.0);
     let result = Client::builder("https://api.example.com")
-        .global_rate_limit_policy(policy)
+        .global_rate_limit_policy(Some(policy))
         .build();
     let error = match result {
         Ok(_) => panic!("invalid global rate limit policy should fail"),
@@ -499,7 +499,7 @@ fn build_rejects_invalid_per_host_rate_limit_policy() {
     crate::test_support::install_crypto_provider();
     let policy = RateLimitPolicy::standard().burst(0);
     let result = Client::builder("https://api.example.com")
-        .per_host_rate_limit_policy(policy)
+        .per_host_rate_limit_policy(Some(policy))
         .build();
     let error = match result {
         Ok(_) => panic!("invalid per-host rate limit policy should fail"),
@@ -681,9 +681,9 @@ fn native_tls_webpki_root_store_is_rejected() {
 }
 
 #[test]
-fn try_add_no_proxy_rejects_invalid_rule() {
+fn add_no_proxy_rejects_invalid_rule() {
     crate::test_support::install_crypto_provider();
-    let result = Client::builder("https://api.example.com").try_add_no_proxy("[::1]not-a-port");
+    let result = Client::builder("https://api.example.com").add_no_proxy("[::1]not-a-port");
     let error = match result {
         Ok(_) => panic!("invalid no_proxy rule should fail"),
         Err(error) => error,
@@ -697,10 +697,10 @@ fn try_add_no_proxy_rejects_invalid_rule() {
 }
 
 #[test]
-fn try_no_proxy_rejects_url_rule_with_path() {
+fn no_proxy_rejects_url_rule_with_path() {
     crate::test_support::install_crypto_provider();
     let result =
-        Client::builder("https://api.example.com").try_no_proxy(["https://api.example.com/v1"]);
+        Client::builder("https://api.example.com").no_proxy(["https://api.example.com/v1"]);
     let error = match result {
         Ok(_) => panic!("url-shaped no_proxy rule with path should fail"),
         Err(error) => error,
@@ -714,10 +714,10 @@ fn try_no_proxy_rejects_url_rule_with_path() {
 }
 
 #[test]
-fn try_no_proxy_redacts_sensitive_url_shaped_rule() {
+fn no_proxy_redacts_sensitive_url_shaped_rule() {
     crate::test_support::install_crypto_provider();
     let result = Client::builder("https://api.example.com")
-        .try_no_proxy(["https://user:pass@api.example.com/v1?token=secret"]);
+        .no_proxy(["https://user:pass@api.example.com/v1?token=secret"]);
     let error = match result {
         Ok(_) => panic!("sensitive invalid no_proxy rule should fail"),
         Err(error) => error,
@@ -731,9 +731,9 @@ fn try_no_proxy_redacts_sensitive_url_shaped_rule() {
 }
 
 #[test]
-fn try_no_proxy_rejects_url_rule_with_non_http_scheme() {
+fn no_proxy_rejects_url_rule_with_non_http_scheme() {
     crate::test_support::install_crypto_provider();
-    let result = Client::builder("https://api.example.com").try_no_proxy(["ftp://api.example.com"]);
+    let result = Client::builder("https://api.example.com").no_proxy(["ftp://api.example.com"]);
     let error = match result {
         Ok(_) => panic!("url-shaped no_proxy rule with non-http scheme should fail"),
         Err(error) => error,
@@ -747,9 +747,9 @@ fn try_no_proxy_rejects_url_rule_with_non_http_scheme() {
 }
 
 #[test]
-fn try_no_proxy_rejects_malformed_http_url_shape() {
+fn no_proxy_rejects_malformed_http_url_shape() {
     crate::test_support::install_crypto_provider();
-    let result = Client::builder("https://api.example.com").try_no_proxy(["http:/api.example.com"]);
+    let result = Client::builder("https://api.example.com").no_proxy(["http:/api.example.com"]);
     let error = match result {
         Ok(_) => panic!("malformed http no_proxy rule should fail"),
         Err(error) => error,
@@ -763,10 +763,10 @@ fn try_no_proxy_rejects_malformed_http_url_shape() {
 }
 
 #[test]
-fn try_no_proxy_rejects_url_rule_with_invalid_authority() {
+fn no_proxy_rejects_url_rule_with_invalid_authority() {
     crate::test_support::install_crypto_provider();
-    let result = Client::builder("https://api.example.com")
-        .try_no_proxy(["https://api.example.com:invalid"]);
+    let result =
+        Client::builder("https://api.example.com").no_proxy(["https://api.example.com:invalid"]);
     let error = match result {
         Ok(_) => panic!("url-shaped no_proxy rule with invalid authority should fail"),
         Err(error) => error,
@@ -780,10 +780,9 @@ fn try_no_proxy_rejects_url_rule_with_invalid_authority() {
 }
 
 #[test]
-fn try_no_proxy_rejects_url_rule_with_empty_port() {
+fn no_proxy_rejects_url_rule_with_empty_port() {
     crate::test_support::install_crypto_provider();
-    let result =
-        Client::builder("https://api.example.com").try_no_proxy(["https://api.example.com:/"]);
+    let result = Client::builder("https://api.example.com").no_proxy(["https://api.example.com:/"]);
     let error = match result {
         Ok(_) => panic!("url-shaped no_proxy rule with empty port should fail"),
         Err(error) => error,
@@ -797,10 +796,10 @@ fn try_no_proxy_rejects_url_rule_with_empty_port() {
 }
 
 #[test]
-fn try_no_proxy_rejects_invalid_rule() {
+fn no_proxy_rejects_invalid_rule() {
     crate::test_support::install_crypto_provider();
     let result =
-        Client::builder("https://api.example.com").try_no_proxy(["example.com", "[::1]not-a-port"]);
+        Client::builder("https://api.example.com").no_proxy(["example.com", "[::1]not-a-port"]);
     let error = match result {
         Ok(_) => panic!("invalid no_proxy rule should fail"),
         Err(error) => error,
@@ -810,45 +809,14 @@ fn try_no_proxy_rejects_invalid_rule() {
 }
 
 #[test]
-fn try_no_proxy_rejects_non_numeric_port_suffix() {
+fn no_proxy_rejects_non_numeric_port_suffix() {
     crate::test_support::install_crypto_provider();
-    let result = Client::builder("https://api.example.com").try_no_proxy(["example.com:abc"]);
+    let result = Client::builder("https://api.example.com").no_proxy(["example.com:abc"]);
     let error = match result {
         Ok(_) => panic!("invalid no_proxy rule should fail"),
         Err(error) => error,
     };
     assert_eq!(error.code(), ErrorCode::InvalidNoProxyRule);
-}
-
-#[test]
-fn no_proxy_records_invalid_rule_and_build_fails() {
-    crate::test_support::install_crypto_provider();
-    let result = Client::builder("https://api.example.com")
-        .no_proxy(["example.com", "[::1]not-a-port"])
-        .build();
-    let error = match result {
-        Ok(_) => panic!("invalid no_proxy rule should fail at build time"),
-        Err(error) => error,
-    };
-    assert_eq!(error.code(), ErrorCode::InvalidNoProxyRule);
-}
-
-#[test]
-fn no_proxy_build_error_redacts_sensitive_url_shaped_rule() {
-    crate::test_support::install_crypto_provider();
-    let result = Client::builder("https://api.example.com")
-        .no_proxy(["https://user:pass@api.example.com/v1?token=secret"])
-        .build();
-    let error = match result {
-        Ok(_) => panic!("sensitive invalid no_proxy rule should fail at build time"),
-        Err(error) => error,
-    };
-
-    assert_eq!(error.code(), ErrorCode::InvalidNoProxyRule);
-    match error {
-        Error::InvalidNoProxyRule { rule } => assert_eq!(rule, "https://api.example.com/v1"),
-        other => panic!("unexpected error variant: {other}"),
-    }
 }
 
 #[cfg(not(feature = "otel"))]

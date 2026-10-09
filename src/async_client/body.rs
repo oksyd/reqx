@@ -4,35 +4,17 @@ use std::error::Error as StdError;
 use bytes::Bytes;
 use futures_core::Stream;
 use futures_util::StreamExt;
-use http::{HeaderMap, Method, Request, Uri};
 use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::body::{Frame, Incoming};
 
-use crate::core::error::Error;
-
 type BoxBodyError = Box<dyn StdError + Send + Sync>;
 pub(crate) type ReqBody = UnsyncBoxBody<Bytes, BoxBodyError>;
 
-pub(crate) enum RequestBody {
-    Buffered(Bytes),
-    Streaming(ReqBody),
-}
-
-impl RequestBody {
-    pub(crate) fn empty() -> Self {
-        Self::Buffered(Bytes::new())
-    }
-}
+pub(crate) type RequestBody = crate::core::request_body::RequestBody<ReqBody>;
 
 fn map_infallible_to_box_error(never: Infallible) -> BoxBodyError {
     match never {}
-}
-
-pub(crate) fn empty_req_body() -> ReqBody {
-    Full::new(Bytes::new())
-        .map_err(map_infallible_to_box_error)
-        .boxed_unsync()
 }
 
 pub(crate) fn buffered_req_body(body: Bytes) -> ReqBody {
@@ -50,21 +32,6 @@ where
         item.map(Frame::data)
             .map_err(|error| Box::new(error) as BoxBodyError)
     })))
-}
-
-pub(crate) fn build_http_request(
-    method: Method,
-    uri: Uri,
-    headers: &HeaderMap,
-    body: ReqBody,
-) -> Result<Request<ReqBody>, Error> {
-    let mut request_builder = Request::builder().method(method).uri(uri);
-    for (name, value) in headers {
-        request_builder = request_builder.header(name, value);
-    }
-    request_builder
-        .body(body)
-        .map_err(|source| Error::RequestBuild { source })
 }
 
 pub(crate) enum ReadBodyError {

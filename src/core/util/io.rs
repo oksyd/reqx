@@ -5,8 +5,7 @@ use std::sync::Mutex;
     feature = "_blocking",
     feature = "compression-gzip",
     feature = "compression-brotli",
-    feature = "compression-zstd",
-    feature = "resumable-upload"
+    feature = "compression-zstd"
 ))]
 use std::io;
 
@@ -22,8 +21,7 @@ pub(crate) fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, 
     feature = "_blocking",
     feature = "compression-gzip",
     feature = "compression-brotli",
-    feature = "compression-zstd",
-    feature = "resumable-upload"
+    feature = "compression-zstd"
 ))]
 pub(crate) fn read_retry_interrupted<R>(reader: &mut R, buffer: &mut [u8]) -> io::Result<usize>
 where
@@ -36,8 +34,4 @@ where
             Err(error) => return Err(error),
         }
     }
-}
-
-pub(crate) const fn normalize_usize_at_least_one(value: usize) -> usize {
-    if value == 0 { 1 } else { value }
 }

@@ -14,7 +14,7 @@ use reqx::advanced::{
     AdaptiveConcurrencyPolicy, CircuitBreakerPolicy, RetryBudgetPolicy, RetryClassifier,
     RetryDecision,
 };
-use reqx::prelude::{Client, Error, RedirectPolicy, RetryPolicy};
+use reqx::prelude::{Client, Error, RedirectPolicy, RetryPolicy, StatusPolicy};
 use tokio::io::{AsyncReadExt, sink};
 
 #[derive(Clone)]
@@ -703,6 +703,7 @@ async fn no_proxy_bypasses_proxy_for_matching_host() {
     let client = Client::builder(format!("http://{}", upstream.authority()))
         .http_proxy(proxy_uri)
         .no_proxy(["127.0.0.1"])
+        .expect("valid no_proxy rules")
         .request_timeout(Duration::from_millis(500))
         .retry_policy(RetryPolicy::disabled())
         .build()
@@ -735,7 +736,7 @@ async fn max_in_flight_enforces_single_active_request() {
         ),
     );
     let client = Client::builder(format!("http://{}", server.authority()))
-        .max_in_flight(1)
+        .max_in_flight(Some(1))
         .request_timeout(Duration::from_millis(800))
         .retry_policy(RetryPolicy::disabled())
         .build()
@@ -840,7 +841,7 @@ async fn max_in_flight_stream_holds_permit_until_stream_is_dropped() {
         ),
     );
     let client = Client::builder(format!("http://{}", server.authority()))
-        .max_in_flight(1)
+        .max_in_flight(Some(1))
         .request_timeout(Duration::from_millis(800))
         .retry_policy(RetryPolicy::disabled())
         .build()
@@ -894,7 +895,7 @@ async fn max_in_flight_stream_into_response_holds_permit_until_buffering_finishe
         ),
     );
     let client = Client::builder(format!("http://{}", server.authority()))
-        .max_in_flight(1)
+        .max_in_flight(Some(1))
         .request_timeout(Duration::from_millis(600))
         .retry_policy(RetryPolicy::disabled())
         .build()
@@ -965,7 +966,7 @@ async fn max_in_flight_queue_wait_respects_total_timeout_deadline() {
         ),
     );
     let client = Client::builder(format!("http://{}", server.authority()))
-        .max_in_flight(1)
+        .max_in_flight(Some(1))
         .request_timeout(Duration::from_millis(800))
         .retry_policy(RetryPolicy::disabled())
         .build()
@@ -979,7 +980,7 @@ async fn max_in_flight_queue_wait_respects_total_timeout_deadline() {
 
     let error = client
         .get("/queued-behind-global-permit")
-        .total_timeout(Duration::from_millis(80))
+        .total_timeout(Some(Duration::from_millis(80)))
         .send()
         .await
         .expect_err("queued request should stop waiting once total_timeout is exhausted");
@@ -1011,7 +1012,7 @@ async fn total_timeout_includes_global_queue_wait_before_send_loop() {
         ),
     );
     let client = Client::builder(format!("http://{}", server.authority()))
-        .max_in_flight(1)
+        .max_in_flight(Some(1))
         .request_timeout(Duration::from_millis(500))
         .retry_policy(RetryPolicy::disabled())
         .build()
@@ -1028,7 +1029,7 @@ async fn total_timeout_includes_global_queue_wait_before_send_loop() {
         tokio::spawn(async move {
             client
                 .get("/queued-total-timeout")
-                .total_timeout(Duration::from_millis(220))
+                .total_timeout(Some(Duration::from_millis(220)))
                 .send()
                 .await
         })
@@ -1076,12 +1077,12 @@ async fn adaptive_concurrency_queue_wait_respects_total_timeout_deadline() {
         ),
     );
     let client = Client::builder(format!("http://{}", server.authority()))
-        .adaptive_concurrency_policy(
+        .adaptive_concurrency_policy(Some(
             AdaptiveConcurrencyPolicy::standard()
                 .min_limit(1)
                 .initial_limit(1)
                 .max_limit(1),
-        )
+        ))
         .request_timeout(Duration::from_millis(700))
         .retry_policy(RetryPolicy::disabled())
         .build()
@@ -1101,7 +1102,7 @@ async fn adaptive_concurrency_queue_wait_respects_total_timeout_deadline() {
 
     let error = client
         .get("/adaptive-second")
-        .total_timeout(Duration::from_millis(80))
+        .total_timeout(Some(Duration::from_millis(80)))
         .send()
         .await
         .expect_err("queued adaptive request should stop waiting at total_timeout");
@@ -1146,7 +1147,7 @@ async fn max_in_flight_per_host_limits_each_host_independently() {
     );
 
     let client = Client::builder(format!("http://{}", server_a.authority()))
-        .max_in_flight_per_host(1)
+        .max_in_flight_per_host(Some(1))
         .request_timeout(Duration::from_millis(800))
         .retry_policy(RetryPolicy::disabled())
         .build()
@@ -1225,7 +1226,7 @@ async fn max_in_flight_per_host_distinguishes_same_host_different_ports() {
     );
 
     let client = Client::builder(format!("http://{}", server_a.authority()))
-        .max_in_flight_per_host(1)
+        .max_in_flight_per_host(Some(1))
         .request_timeout(Duration::from_millis(800))
         .retry_policy(RetryPolicy::disabled())
         .build()
@@ -1309,7 +1310,7 @@ async fn max_in_flight_per_host_applies_to_redirect_target_host() {
     );
 
     let client = Client::builder(format!("http://{}", source_a.authority()))
-        .max_in_flight_per_host(1)
+        .max_in_flight_per_host(Some(1))
         .request_timeout(Duration::from_millis(800))
         .redirect_policy(RedirectPolicy::follow())
         .retry_policy(RetryPolicy::disabled())
@@ -1378,7 +1379,7 @@ async fn total_timeout_interrupts_retry_loop_with_retry_after() {
 
     let client = Client::builder(format!("http://{}", server.authority()))
         .request_timeout(Duration::from_millis(400))
-        .total_timeout(Duration::from_millis(300))
+        .total_timeout(Some(Duration::from_millis(300)))
         .retry_policy(
             RetryPolicy::standard()
                 .max_attempts(3)
@@ -1541,12 +1542,12 @@ async fn retry_budget_exhausted_stops_retry_loop_early() {
                 .max_backoff(Duration::from_millis(2))
                 .jitter_ratio(0.0),
         )
-        .retry_budget_policy(
+        .retry_budget_policy(Some(
             RetryBudgetPolicy::standard()
                 .window(Duration::from_secs(1))
                 .retry_ratio(0.0)
                 .min_retries_per_window(1),
-        )
+        ))
         .request_timeout(Duration::from_millis(400))
         .build()
         .expect("client should build");
@@ -1596,19 +1597,19 @@ async fn retry_budget_stream_body_failure_does_not_credit_success() {
                 .max_backoff(Duration::from_millis(1))
                 .jitter_ratio(0.0),
         )
-        .retry_budget_policy(
+        .retry_budget_policy(Some(
             RetryBudgetPolicy::standard()
                 .window(Duration::from_secs(60))
                 .retry_ratio(1.0)
                 .min_retries_per_window(0),
-        )
+        ))
         .request_timeout(Duration::from_millis(400))
         .build()
         .expect("client should build");
 
     let stream = client
         .get("/stream-budget-credit")
-        .timeout(Duration::from_millis(50))
+        .request_timeout(Duration::from_millis(50))
         .send_stream()
         .await
         .expect("stream request should return headers");
@@ -1659,13 +1660,13 @@ async fn circuit_breaker_short_circuits_after_opening() {
     );
     let client = Client::builder(format!("http://{}", server.authority()))
         .retry_policy(RetryPolicy::disabled())
-        .circuit_breaker_policy(
+        .circuit_breaker_policy(Some(
             CircuitBreakerPolicy::standard()
                 .failure_threshold(1)
                 .open_timeout(Duration::from_secs(30))
                 .half_open_max_requests(1)
                 .half_open_success_threshold(1),
-        )
+        ))
         .request_timeout(Duration::from_millis(400))
         .build()
         .expect("client should build");
@@ -1719,20 +1720,20 @@ async fn circuit_breaker_stream_body_failure_opens_circuit() {
     );
     let client = Client::builder(format!("http://{}", delayed_server.authority()))
         .retry_policy(RetryPolicy::disabled())
-        .circuit_breaker_policy(
+        .circuit_breaker_policy(Some(
             CircuitBreakerPolicy::standard()
                 .failure_threshold(1)
                 .open_timeout(Duration::from_secs(30))
                 .half_open_max_requests(1)
                 .half_open_success_threshold(1),
-        )
+        ))
         .request_timeout(Duration::from_millis(400))
         .build()
         .expect("client should build");
 
     let stream = client
         .get("/stream-open-circuit")
-        .timeout(Duration::from_millis(50))
+        .request_timeout(Duration::from_millis(50))
         .send_stream()
         .await
         .expect("stream request should return headers");
@@ -1783,15 +1784,15 @@ async fn circuit_breaker_does_not_open_on_local_host_limiter_timeout() {
     );
     let client = Client::builder(format!("http://{}", server.authority()))
         .retry_policy(RetryPolicy::disabled())
-        .circuit_breaker_policy(
+        .circuit_breaker_policy(Some(
             CircuitBreakerPolicy::standard()
                 .failure_threshold(1)
                 .open_timeout(Duration::from_secs(30))
                 .half_open_max_requests(1)
                 .half_open_success_threshold(1),
-        )
-        .max_in_flight_per_host(1)
-        .total_timeout(Duration::from_millis(80))
+        ))
+        .max_in_flight_per_host(Some(1))
+        .total_timeout(Some(Duration::from_millis(80)))
         .request_timeout(Duration::from_millis(400))
         .build()
         .expect("client should build");
@@ -1849,29 +1850,30 @@ async fn circuit_breaker_open_state_bypasses_adaptive_queue_wait() {
     );
     let client = Client::builder(format!("http://{}", held_server.authority()))
         .retry_policy(RetryPolicy::disabled())
-        .circuit_breaker_policy(
+        .circuit_breaker_policy(Some(
             CircuitBreakerPolicy::standard()
                 .failure_threshold(1)
                 .open_timeout(Duration::from_secs(30))
                 .half_open_max_requests(1)
                 .half_open_success_threshold(1),
-        )
-        .adaptive_concurrency_policy(
+        ))
+        .adaptive_concurrency_policy(Some(
             AdaptiveConcurrencyPolicy::standard()
                 .min_limit(1)
                 .initial_limit(2)
                 .max_limit(2)
                 .decrease_ratio(0.5)
                 .high_latency_threshold(Duration::from_secs(30)),
-        )
-        .total_timeout(Duration::from_millis(250))
+        ))
+        .total_timeout(Some(Duration::from_millis(250)))
         .request_timeout(Duration::from_millis(800))
         .build()
         .expect("client should build");
 
     let held_stream = client
         .get("/hold-adaptive-permit")
-        .send_response_stream()
+        .status_policy(StatusPolicy::Response)
+        .send_stream()
         .await
         .expect("first stream should hold an adaptive permit");
 
@@ -1924,13 +1926,13 @@ async fn circuit_breaker_error_mode_does_not_open_on_non_success_buffered() {
     );
     let client = Client::builder(format!("http://{}", server.authority()))
         .retry_policy(RetryPolicy::disabled())
-        .circuit_breaker_policy(
+        .circuit_breaker_policy(Some(
             CircuitBreakerPolicy::standard()
                 .failure_threshold(1)
                 .open_timeout(Duration::from_secs(30))
                 .half_open_max_requests(1)
                 .half_open_success_threshold(1),
-        )
+        ))
         .request_timeout(Duration::from_millis(400))
         .build()
         .expect("client should build");
@@ -1975,27 +1977,29 @@ async fn circuit_breaker_response_mode_does_not_open_on_non_success_buffered() {
     );
     let client = Client::builder(format!("http://{}", server.authority()))
         .retry_policy(RetryPolicy::disabled())
-        .circuit_breaker_policy(
+        .circuit_breaker_policy(Some(
             CircuitBreakerPolicy::standard()
                 .failure_threshold(1)
                 .open_timeout(Duration::from_secs(30))
                 .half_open_max_requests(1)
                 .half_open_success_threshold(1),
-        )
+        ))
         .request_timeout(Duration::from_millis(400))
         .build()
         .expect("client should build");
 
     let first = client
         .get("/response-mode-buffered")
-        .send_response()
+        .status_policy(StatusPolicy::Response)
+        .send()
         .await
         .expect("first non-success response should be returned");
     assert_eq!(first.status(), http::StatusCode::NOT_FOUND);
 
     let second = client
         .get("/response-mode-buffered")
-        .send_response()
+        .status_policy(StatusPolicy::Response)
+        .send()
         .await
         .expect("second non-success response should be returned");
     assert_eq!(second.status(), http::StatusCode::NOT_FOUND);
@@ -2020,27 +2024,29 @@ async fn circuit_breaker_response_mode_opens_on_retryable_non_success_buffered()
     );
     let client = Client::builder(format!("http://{}", server.authority()))
         .retry_policy(RetryPolicy::disabled())
-        .circuit_breaker_policy(
+        .circuit_breaker_policy(Some(
             CircuitBreakerPolicy::standard()
                 .failure_threshold(1)
                 .open_timeout(Duration::from_secs(30))
                 .half_open_max_requests(1)
                 .half_open_success_threshold(1),
-        )
+        ))
         .request_timeout(Duration::from_millis(400))
         .build()
         .expect("client should build");
 
     let first = client
         .get("/response-mode-buffered-503")
-        .send_response()
+        .status_policy(StatusPolicy::Response)
+        .send()
         .await
         .expect("retryable non-success response should be returned");
     assert_eq!(first.status(), http::StatusCode::SERVICE_UNAVAILABLE);
 
     let second = client
         .get("/response-mode-buffered-503")
-        .send_response()
+        .status_policy(StatusPolicy::Response)
+        .send()
         .await
         .expect_err("retryable non-success response should open circuit");
     match second {
@@ -2068,27 +2074,29 @@ async fn circuit_breaker_response_mode_does_not_open_on_non_success_stream() {
     );
     let client = Client::builder(format!("http://{}", server.authority()))
         .retry_policy(RetryPolicy::disabled())
-        .circuit_breaker_policy(
+        .circuit_breaker_policy(Some(
             CircuitBreakerPolicy::standard()
                 .failure_threshold(1)
                 .open_timeout(Duration::from_secs(30))
                 .half_open_max_requests(1)
                 .half_open_success_threshold(1),
-        )
+        ))
         .request_timeout(Duration::from_millis(400))
         .build()
         .expect("client should build");
 
     let first = client
         .get("/response-mode-stream")
-        .send_response_stream()
+        .status_policy(StatusPolicy::Response)
+        .send_stream()
         .await
         .expect("first non-success stream should be returned");
     assert_eq!(first.status(), http::StatusCode::NOT_FOUND);
 
     let second = client
         .get("/response-mode-stream")
-        .send_response_stream()
+        .status_policy(StatusPolicy::Response)
+        .send_stream()
         .await
         .expect("second non-success stream should be returned");
     assert_eq!(second.status(), http::StatusCode::NOT_FOUND);
@@ -2113,20 +2121,21 @@ async fn circuit_breaker_response_mode_opens_on_retryable_non_success_stream() {
     );
     let client = Client::builder(format!("http://{}", server.authority()))
         .retry_policy(RetryPolicy::disabled())
-        .circuit_breaker_policy(
+        .circuit_breaker_policy(Some(
             CircuitBreakerPolicy::standard()
                 .failure_threshold(1)
                 .open_timeout(Duration::from_secs(30))
                 .half_open_max_requests(1)
                 .half_open_success_threshold(1),
-        )
+        ))
         .request_timeout(Duration::from_millis(400))
         .build()
         .expect("client should build");
 
     let first = client
         .get("/response-mode-stream-503")
-        .send_response_stream()
+        .status_policy(StatusPolicy::Response)
+        .send_stream()
         .await
         .expect("retryable non-success stream should be returned");
     assert_eq!(first.status(), http::StatusCode::SERVICE_UNAVAILABLE);
@@ -2138,7 +2147,8 @@ async fn circuit_breaker_response_mode_opens_on_retryable_non_success_stream() {
 
     let second = client
         .get("/response-mode-stream-503")
-        .send_response_stream()
+        .status_policy(StatusPolicy::Response)
+        .send_stream()
         .await
         .expect_err("retryable non-success stream should open circuit");
     match second {
@@ -2166,20 +2176,21 @@ async fn circuit_breaker_response_mode_opens_on_dropped_retryable_non_success_st
     );
     let client = Client::builder(format!("http://{}", server.authority()))
         .retry_policy(RetryPolicy::disabled())
-        .circuit_breaker_policy(
+        .circuit_breaker_policy(Some(
             CircuitBreakerPolicy::standard()
                 .failure_threshold(1)
                 .open_timeout(Duration::from_secs(30))
                 .half_open_max_requests(1)
                 .half_open_success_threshold(1),
-        )
+        ))
         .request_timeout(Duration::from_millis(400))
         .build()
         .expect("client should build");
 
     let first = client
         .get("/response-mode-stream-503-drop")
-        .send_response_stream()
+        .status_policy(StatusPolicy::Response)
+        .send_stream()
         .await
         .expect("retryable non-success stream should be returned");
     assert_eq!(first.status(), http::StatusCode::SERVICE_UNAVAILABLE);
@@ -2187,7 +2198,8 @@ async fn circuit_breaker_response_mode_opens_on_dropped_retryable_non_success_st
 
     let second = client
         .get("/response-mode-stream-503-drop")
-        .send_response_stream()
+        .status_policy(StatusPolicy::Response)
+        .send_stream()
         .await
         .expect_err("dropped retryable non-success stream should open circuit");
     match second {

@@ -128,23 +128,20 @@ fn error_safe_request_accessors_return_method_uri_and_path() {
         error.request_uri_redacted(),
         Some("https://api.example.com/v1/items")
     );
-    assert_eq!(
-        error.request_uri_redacted_owned().as_deref(),
-        Some("https://api.example.com/v1/items")
-    );
     assert_eq!(error.request_path().as_deref(), Some("/v1/items"));
 }
 
 #[test]
 fn error_code_contract_table_is_stable() {
     let codes = ErrorCode::all();
-    assert_eq!(codes.len(), 39);
+    assert_eq!(codes.len(), 40);
 
     let names: Vec<&str> = codes.iter().map(|code| code.as_str()).collect();
     assert_eq!(
         names,
         vec![
             "invalid_uri",
+            "invalid_endpoint_config",
             "invalid_no_proxy_rule",
             "invalid_dns_override_config",
             "invalid_proxy_config",

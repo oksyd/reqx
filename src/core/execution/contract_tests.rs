@@ -9,13 +9,13 @@ use crate::core::extensions::{EndpointSelector, SystemClock};
 struct StaticEndpointSelector(&'static str);
 
 impl EndpointSelector for StaticEndpointSelector {
-    fn select_base_url(
-        &self,
+    fn select_base_url<'a>(
+        &'a self,
         _method: &http::Method,
         _path: &str,
-        _configured_base_url: &str,
-    ) -> crate::Result<String> {
-        Ok(self.0.to_owned())
+        _configured_base_url: &'a str,
+    ) -> crate::Result<std::borrow::Cow<'a, str>> {
+        Ok(std::borrow::Cow::Borrowed(self.0))
     }
 }
 
@@ -23,7 +23,7 @@ impl EndpointSelector for StaticEndpointSelector {
 fn select_base_url_rejects_invalid_endpoint_selector_value() {
     let selector = StaticEndpointSelector("https://api.example.com:/v1");
     let error = select_base_url(
-        &selector,
+        Some(&selector),
         &http::Method::GET,
         "/users",
         "https://fallback.example.com/v1",

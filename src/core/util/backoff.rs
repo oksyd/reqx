@@ -4,7 +4,7 @@ use rand::RngExt;
 
 use super::timing::duration_from_nanos_saturating;
 
-pub(crate) fn clamp_f64_or_fallback(value: f64, min: f64, max: f64, nan_fallback: f64) -> f64 {
+fn clamp_f64_or_fallback(value: f64, min: f64, max: f64, nan_fallback: f64) -> f64 {
     debug_assert!(min.is_finite());
     debug_assert!(max.is_finite());
     debug_assert!(nan_fallback.is_finite());

@@ -33,7 +33,7 @@
 //!     let client = Client::builder("https://api.example.com")
 //!         .client_name("my-sdk")
 //!         .request_timeout(Duration::from_secs(3))
-//!         .total_timeout(Duration::from_secs(8))
+//!         .total_timeout(Some(Duration::from_secs(8)))
 //!         .retry_policy(
 //!             RetryPolicy::standard()
 //!                 .max_attempts(3)
@@ -65,11 +65,11 @@
 //!
 //! Start from these entry points:
 //!
-//! - Build an async client: [`Client::builder`]
+//! - Build an async client: `reqx::Client::builder(...)`
 //! - Build a blocking client: `reqx::blocking::Client::builder(...)`
-//! - Prepare requests: [`RequestBuilder`] and `reqx::blocking::RequestBuilder`
+//! - Prepare requests: `reqx::RequestBuilder` and `reqx::blocking::RequestBuilder`
 //! - Handle buffered responses: [`Response`]
-//! - Handle streaming responses: [`ResponseStream`] and `reqx::blocking::ResponseStream`
+//! - Handle streaming responses: `reqx::ResponseStream` and `reqx::blocking::ResponseStream`
 //! - Tune retries: [`prelude::RetryPolicy`] and [`advanced::RetryClassifier`]
 //! - Configure TLS: [`TlsBackend`], [`TlsVersion`], and [`TlsRootStore`]
 //! - Add advanced hooks: [`advanced::Interceptor`], [`advanced::Observer`], and [`advanced::EndpointSelector`]
@@ -94,7 +94,8 @@
 //! - All response compression codecs: `compression`
 //! - Individual codecs: `compression-gzip`, `compression-brotli`, and
 //!   `compression-zstd`
-//! - Resumable multipart uploads: `resumable-upload`
+//! - Blocking resumable multipart uploads: `resumable-upload`
+//! - Async resumable multipart uploads without HTTP/TLS: `resumable-upload-async`
 //!
 //! TLS backend features are additive. If multiple backends are enabled, choose
 //! one with `Client::builder(...).tls_backend(...)`; rustls with `ring` has the
@@ -127,8 +128,7 @@
 //!   `Client::builder(...).tls_max_version(...)`.
 //! - `native-tls` backends do not support [`TlsRootStore::WebPki`].
 //! - Async `native-tls` forwards TLS version bounds to the platform TLS stack.
-//! - Blocking `ureq` transport currently rejects TLS version bounds at
-//!   `build()` time.
+//! - Blocking `ureq` transport does not expose TLS version overrides.
 //! - Custom root CAs require [`TlsRootStore::WebPki`],
 //!   [`TlsRootStore::System`], or [`TlsRootStore::Specific`].
 //! - Rustls backends append custom root CAs to [`TlsRootStore::WebPki`]'s
@@ -202,7 +202,9 @@ mod upload;
         feature = "async-tls-native"
     )))
 )]
-pub use crate::async_client::{Client, ClientBuilder, RequestBuilder};
+pub use crate::async_client::{Client, RequestBuilder};
+#[cfg(any(feature = "_async", feature = "_blocking"))]
+pub use crate::core::client_builder::ClientBuilder;
 pub use crate::core::error::{Error, ErrorCode, TimeoutPhase, TransportErrorKind};
 pub use crate::http::response::Response;
 #[cfg(feature = "_async")]
@@ -290,34 +292,25 @@ pub mod prelude {
 
 /// Advanced transport controls and extensibility points.
 pub mod advanced {
+    #[cfg(feature = "_async")]
+    pub use crate::async_client::builder::AsyncTransportOptions;
+    #[cfg(feature = "_blocking")]
+    pub use crate::blocking_client::builder::BlockingTransportOptions;
     pub use crate::core::config::ClientProfile;
     pub use crate::core::error::{TimeoutPhase, TransportErrorKind};
     pub use crate::core::extensions::{
-        BackoffSource, BodyCodec, Clock, EndpointSelector, OtelPathNormalizer, PolicyBackoffSource,
-        PrimaryEndpointSelector, RoundRobinEndpointSelector, StandardBodyCodec,
+        BackoffSource, Clock, EndpointSelector, OtelPathNormalizer, RoundRobinEndpointSelector,
         StandardOtelPathNormalizer, SystemClock,
     };
-    #[cfg(all(feature = "_async", feature = "resumable-upload"))]
-    #[cfg_attr(
-        docsrs,
-        doc(cfg(all(
-            feature = "resumable-upload",
-            any(
-                feature = "async-tls-rustls-ring",
-                feature = "async-tls-rustls-aws-lc-rs",
-                feature = "async-tls-rustls-graviola",
-                feature = "async-tls-rustls-no-provider",
-                feature = "async-tls-native"
-            )
-        )))
-    )]
-    pub use crate::upload::{AsyncResumableUploadBackend, AsyncResumableUploader};
+    #[cfg(feature = "resumable-upload-async")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "resumable-upload-async")))]
+    pub use crate::upload::AsyncResumableUploadBackend;
     #[cfg(feature = "resumable-upload")]
     #[cfg_attr(docsrs, doc(cfg(feature = "resumable-upload")))]
     pub use crate::upload::{
-        BlockingResumableUploadBackend, BlockingResumableUploader, PartChecksumAlgorithm,
-        RESUMABLE_UPLOAD_CHECKPOINT_VERSION, ResumableUploadCheckpoint, ResumableUploadError,
-        ResumableUploadOptions, ResumableUploadResult, UploadedPart,
+        BlockingResumableUploadBackend, PartChecksumAlgorithm, RESUMABLE_UPLOAD_CHECKPOINT_VERSION,
+        ResumableUploadCheckpoint, ResumableUploadError, ResumableUploadOptions,
+        ResumableUploadResult, ResumableUploader, UploadedPart,
     };
     pub use crate::{
         core::metrics::{
@@ -335,6 +328,9 @@ pub mod advanced {
         tls::{TlsBackend, TlsRootStore, TlsVersion},
     };
 }
+
+#[cfg(test)]
+extern crate self as reqx;
 
 #[cfg(test)]
 #[path = "../tests/support/mod.rs"]

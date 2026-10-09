@@ -91,6 +91,8 @@ impl std::fmt::Display for TimeoutPhase {
 pub enum ErrorCode {
     /// The base URL or request URI was invalid.
     InvalidUri,
+    /// Endpoint selection settings were invalid.
+    InvalidEndpointConfig,
     /// A `no_proxy` rule could not be parsed.
     InvalidNoProxyRule,
     /// Static DNS override configuration was invalid or incompatible with proxy routing.
@@ -172,6 +174,7 @@ pub enum ErrorCode {
 impl ErrorCode {
     const ALL: &'static [Self] = &[
         Self::InvalidUri,
+        Self::InvalidEndpointConfig,
         Self::InvalidNoProxyRule,
         Self::InvalidDnsOverrideConfig,
         Self::InvalidProxyConfig,
@@ -221,6 +224,7 @@ impl ErrorCode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::InvalidUri => "invalid_uri",
+            Self::InvalidEndpointConfig => "invalid_endpoint_config",
             Self::InvalidNoProxyRule => "invalid_no_proxy_rule",
             Self::InvalidDnsOverrideConfig => "invalid_dns_override_config",
             Self::InvalidProxyConfig => "invalid_proxy_config",
@@ -272,6 +276,12 @@ pub enum Error {
     InvalidUri {
         /// Invalid URI string.
         uri: String,
+    },
+    /// Endpoint selection settings were invalid.
+    #[error("invalid endpoint configuration: {message}")]
+    InvalidEndpointConfig {
+        /// Configuration failure explanation.
+        message: &'static str,
     },
     /// A `no_proxy` rule could not be parsed.
     #[error("invalid no_proxy rule: {rule:?}")]
@@ -677,6 +687,7 @@ impl Error {
     pub const fn code(&self) -> ErrorCode {
         match self {
             Self::InvalidUri { .. } => ErrorCode::InvalidUri,
+            Self::InvalidEndpointConfig { .. } => ErrorCode::InvalidEndpointConfig,
             Self::InvalidNoProxyRule { .. } => ErrorCode::InvalidNoProxyRule,
             Self::InvalidDnsOverrideConfig { .. } => ErrorCode::InvalidDnsOverrideConfig,
             Self::InvalidProxyConfig { .. } | Self::ProxyAuthorizationRequiresHttpProxy => {
@@ -798,11 +809,6 @@ impl Error {
             | Self::RedirectBodyNotReplayable { uri, .. } => Some(uri),
             _ => None,
         }
-    }
-
-    /// Returns an owned copy of the redacted request URI.
-    pub fn request_uri_redacted_owned(&self) -> Option<String> {
-        self.request_uri_redacted().map(ToOwned::to_owned)
     }
 
     /// Returns just the request path component when a request URI is available.

@@ -7,26 +7,23 @@ mod timing;
 mod transport_error;
 mod uri;
 
-pub(crate) use backoff::{clamp_f64_or_fallback, exponential_backoff_with_jitter};
-#[cfg(any(feature = "_async", feature = "_blocking"))]
-pub(crate) use headers::ensure_accept_encoding;
+pub(crate) use backoff::exponential_backoff_with_jitter;
 #[cfg(any(test, feature = "_async", feature = "_blocking"))]
 pub(crate) use headers::validate_request_framing_headers;
+pub(crate) use headers::{ensure_accept_encoding, merge_headers, truncate_body};
 #[cfg(any(feature = "_async", feature = "_blocking"))]
 pub(crate) use headers::{
     mark_sensitive_header_value, mark_sensitive_headers, parse_header_name, parse_header_value,
 };
-pub(crate) use headers::{merge_headers, truncate_body};
+pub(crate) use io::lock_unpoisoned;
 #[cfg(any(
     test,
     feature = "_blocking",
     feature = "compression-gzip",
     feature = "compression-brotli",
-    feature = "compression-zstd",
-    feature = "resumable-upload"
+    feature = "compression-zstd"
 ))]
 pub(crate) use io::read_retry_interrupted;
-pub(crate) use io::{lock_unpoisoned, normalize_usize_at_least_one};
 pub(crate) use redaction::{
     redact_uri_for_logs, redact_uri_like_text_for_logs, redact_uri_without_url_normalization,
 };
@@ -46,10 +43,9 @@ pub(crate) use timing::{duration_from_millis_saturating, saturating_u64_to_usize
 #[cfg(any(feature = "_async", feature = "_blocking"))]
 pub(crate) use transport_error::{classify_io_transport_error_kind, is_tls_error};
 #[cfg(any(feature = "_async", feature = "_blocking"))]
-pub(crate) use uri::validate_http_proxy_uri;
+pub(crate) use uri::{append_query, validate_http_proxy_uri};
 pub(crate) use uri::{
-    append_query_pairs, is_valid_absolute_http_uri_text, normalize_host_key, resolve_uri,
-    validate_base_url,
+    is_valid_absolute_http_uri_text, normalize_host_key, resolve_uri, validate_base_url,
 };
 
 #[cfg(test)]

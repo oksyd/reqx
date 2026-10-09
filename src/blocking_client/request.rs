@@ -9,23 +9,19 @@ use serde::de::DeserializeOwned;
 
 use crate::IDEMPOTENCY_KEY_HEADER;
 use crate::core::policy::{RedirectPolicy, StatusPolicy};
-use crate::core::request_builder::{
-    PreparedRequest, RequestExecutionOptions, RequestExecutionOverrides, RequestPreparation,
-};
+use crate::core::request_builder::RequestExecutionOverrides;
 use crate::core::retry::RetryPolicy;
-use crate::core::util::{mark_sensitive_header_value, parse_header_name, parse_header_value};
+use crate::core::util::{
+    append_query, mark_sensitive_header_value, parse_header_name, parse_header_value,
+};
 use crate::http::response::{BlockingResponseStream, Response};
 
 use super::{Client, RequestBody};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ContentLengthSource {
-    None,
-    RequestHelper,
-    User,
-}
-
 /// Builds and executes a single request against an existing [`Client`].
+///
+/// Owns a cheap client clone, so a prepared request can outlive the client
+/// handle that created it and can be moved into another thread.
 ///
 /// Create a builder from [`Client::request`] or the verb helpers such as
 /// [`Client::get`] and [`Client::post`].
@@ -45,27 +41,27 @@ enum ContentLengthSource {
     )))
 )]
 #[must_use = "request builders do nothing until you call a send method"]
-pub struct RequestBuilder<'a> {
-    client: &'a Client,
+pub struct RequestBuilder {
+    client: Client,
     method: Method,
     path: String,
-    query_pairs: Vec<(String, String)>,
+    query: String,
     headers: HeaderMap,
     body: Option<RequestBody>,
-    content_length_source: ContentLengthSource,
+    helper_content_length: bool,
     execution_overrides: RequestExecutionOverrides,
 }
 
-impl<'a> RequestBuilder<'a> {
-    pub(crate) fn new(client: &'a Client, method: Method, path: String) -> Self {
+impl RequestBuilder {
+    pub(crate) fn new(client: Client, method: Method, path: String) -> Self {
         Self {
             client,
             method,
             path,
-            query_pairs: Vec::new(),
+            query: String::new(),
             headers: HeaderMap::new(),
             body: None,
-            content_length_source: ContentLengthSource::None,
+            helper_content_length: false,
             execution_overrides: RequestExecutionOverrides::default(),
         }
     }
@@ -77,7 +73,7 @@ impl<'a> RequestBuilder<'a> {
     pub fn header(mut self, name: HeaderName, mut value: HeaderValue) -> Self {
         mark_sensitive_header_value(&name, &mut value);
         if name == CONTENT_LENGTH {
-            self.content_length_source = ContentLengthSource::User;
+            self.helper_content_length = false;
         }
         self.headers.insert(name, value);
         self
@@ -96,23 +92,20 @@ impl<'a> RequestBuilder<'a> {
     }
 
     /// Appends one query parameter pair.
-    pub fn query_pair(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
-        self.query_pairs.push((name.into(), value.into()));
+    pub fn query_pair(mut self, name: impl AsRef<str>, value: impl AsRef<str>) -> Self {
+        url::form_urlencoded::Serializer::new(&mut self.query)
+            .append_pair(name.as_ref(), value.as_ref());
         self
     }
 
     /// Appends multiple query parameter pairs.
     pub fn query_pairs<K, V, I>(mut self, pairs: I) -> Self
     where
-        K: Into<String>,
-        V: Into<String>,
+        K: AsRef<str>,
+        V: AsRef<str>,
         I: IntoIterator<Item = (K, V)>,
     {
-        self.query_pairs.extend(
-            pairs
-                .into_iter()
-                .map(|(name, value)| (name.into(), value.into())),
-        );
+        url::form_urlencoded::Serializer::new(&mut self.query).extend_pairs(pairs);
         self
     }
 
@@ -121,12 +114,10 @@ impl<'a> RequestBuilder<'a> {
     where
         T: Serialize + ?Sized,
     {
-        let encoded = serde_urlencoded::to_string(params)
+        let mut serializer = url::form_urlencoded::Serializer::new(&mut self.query);
+        params
+            .serialize(serde_urlencoded::Serializer::new(&mut serializer))
             .map_err(|source| crate::core::error::Error::SerializeQuery { source })?;
-        self.query_pairs.extend(
-            url::form_urlencoded::parse(encoded.as_bytes())
-                .map(|(name, value)| (name.into_owned(), value.into_owned())),
-        );
         Ok(self)
     }
 
@@ -145,43 +136,29 @@ impl<'a> RequestBuilder<'a> {
     where
         R: Read + Send + 'static,
     {
-        if self.content_length_source == ContentLengthSource::RequestHelper {
+        if self.helper_content_length {
             self.clear_content_length();
         }
-        self.body = Some(RequestBody::Reader(Box::new(reader)));
+        self.body = Some(RequestBody::Streaming(Box::new(reader)));
         self
     }
 
     /// Streams a blocking reader as the request body and sets `Content-Length`.
-    pub fn body_reader_with_length<R>(self, reader: R, content_length: u64) -> crate::Result<Self>
+    pub fn body_reader_with_length<R>(self, reader: R, content_length: u64) -> Self
     where
         R: Read + Send + 'static,
     {
-        let value = HeaderValue::from_str(&content_length.to_string()).map_err(|source| {
-            crate::core::error::Error::InvalidHeaderValue {
-                name: CONTENT_LENGTH.as_str().to_owned(),
-                source,
-            }
-        })?;
         let mut builder = self.body_reader(reader);
-        builder.set_helper_content_length(value);
-        Ok(builder)
-    }
-
-    fn body_bytes(mut self, body: Bytes) -> Self {
-        self.clear_content_length();
-        self.body = Some(RequestBody::Buffered(body));
-        self
+        builder
+            .headers
+            .insert(CONTENT_LENGTH, HeaderValue::from(content_length));
+        builder.helper_content_length = true;
+        builder
     }
 
     fn clear_content_length(&mut self) {
         self.headers.remove(CONTENT_LENGTH);
-        self.content_length_source = ContentLengthSource::None;
-    }
-
-    fn set_helper_content_length(&mut self, value: HeaderValue) {
-        self.headers.insert(CONTENT_LENGTH, value);
-        self.content_length_source = ContentLengthSource::RequestHelper;
+        self.helper_content_length = false;
     }
 
     /// Serializes `payload` as JSON and sets `Content-Type: application/json`.
@@ -191,7 +168,7 @@ impl<'a> RequestBuilder<'a> {
     {
         let body = serde_json::to_vec(payload)
             .map_err(|source| crate::core::error::Error::SerializeJson { source })?;
-        let with_body = self.body_bytes(Bytes::from(body));
+        let with_body = self.body(Bytes::from(body));
         Ok(with_body.header(CONTENT_TYPE, HeaderValue::from_static("application/json")))
     }
 
@@ -202,7 +179,7 @@ impl<'a> RequestBuilder<'a> {
     {
         let encoded = serde_urlencoded::to_string(payload)
             .map_err(|source| crate::core::error::Error::SerializeForm { source })?;
-        let with_body = self.body_bytes(Bytes::from(encoded));
+        let with_body = self.body(Bytes::from(encoded));
         Ok(with_body.header(
             CONTENT_TYPE,
             HeaderValue::from_static("application/x-www-form-urlencoded"),
@@ -212,15 +189,18 @@ impl<'a> RequestBuilder<'a> {
     /// Overrides the per-attempt request timeout for this request.
     ///
     /// A zero duration is rejected by `send` or `send_stream`.
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.execution_overrides.request_timeout = Some(timeout);
+    pub fn request_timeout(mut self, request_timeout: Duration) -> Self {
+        self.execution_overrides.request_timeout = Some(request_timeout);
         self
     }
 
     /// Overrides the overall deadline for this request.
     ///
+    /// `None` disables the client deadline for this request. Omitting this call
+    /// inherits the client setting.
+    ///
     /// A zero duration is rejected by `send` or `send_stream`.
-    pub fn total_timeout(mut self, total_timeout: Duration) -> Self {
+    pub fn total_timeout(mut self, total_timeout: Option<Duration>) -> Self {
         self.execution_overrides.total_timeout = Some(total_timeout);
         self
     }
@@ -258,48 +238,28 @@ impl<'a> RequestBuilder<'a> {
         self
     }
 
-    fn into_prepared_request(
-        self,
-        forced_status_policy: Option<StatusPolicy>,
-    ) -> PreparedRequest<'a, Client, RequestBody, RequestExecutionOptions> {
-        RequestPreparation {
-            client: self.client,
-            method: self.method,
-            path: self.path,
-            query_pairs: self.query_pairs,
-            headers: self.headers,
-            body: self.body,
-            execution_overrides: self.execution_overrides,
-        }
-        .prepare(forced_status_policy, RequestExecutionOptions::from)
-    }
-
     /// Executes the request and applies the effective [`StatusPolicy`].
     pub fn send(self) -> crate::Result<Response> {
-        let PreparedRequest {
-            client,
-            method,
-            path,
-            headers,
-            body,
-            execution_options,
-        } = self.into_prepared_request(None);
-        client.send_request(method, path, headers, body, execution_options)
+        self.client.send_request(
+            self.method,
+            append_query(self.path, &self.query),
+            self.headers,
+            self.body,
+            self.execution_overrides,
+        )
     }
 
     /// Executes the request and returns a streaming response body.
     ///
     /// Non-success HTTP statuses still follow the effective [`StatusPolicy`].
     pub fn send_stream(self) -> crate::Result<BlockingResponseStream> {
-        let PreparedRequest {
-            client,
-            method,
-            path,
-            headers,
-            body,
-            execution_options,
-        } = self.into_prepared_request(None);
-        client.send_request_stream(method, path, headers, body, execution_options)
+        self.client.send_request_stream(
+            self.method,
+            append_query(self.path, &self.query),
+            self.headers,
+            self.body,
+            self.execution_overrides,
+        )
     }
 
     /// Streams the response body into `writer`.
@@ -330,33 +290,5 @@ impl<'a> RequestBuilder<'a> {
     {
         let response = self.send()?;
         response.json()
-    }
-
-    /// Executes the request and always returns a buffered [`Response`] for
-    /// HTTP status responses.
-    pub fn send_response(self) -> crate::Result<Response> {
-        let PreparedRequest {
-            client,
-            method,
-            path,
-            headers,
-            body,
-            execution_options,
-        } = self.into_prepared_request(Some(StatusPolicy::Response));
-        client.send_request(method, path, headers, body, execution_options)
-    }
-
-    /// Executes the request and always returns a streaming response for
-    /// HTTP status responses.
-    pub fn send_response_stream(self) -> crate::Result<BlockingResponseStream> {
-        let PreparedRequest {
-            client,
-            method,
-            path,
-            headers,
-            body,
-            execution_options,
-        } = self.into_prepared_request(Some(StatusPolicy::Response));
-        client.send_request_stream(method, path, headers, body, execution_options)
     }
 }

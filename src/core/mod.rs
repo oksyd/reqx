@@ -1,6 +1,8 @@
 //! Shared request policies, validation, and execution state.
 //! Concrete connections and backend error adapters belong to their client modules.
 
+#[cfg(any(feature = "_async", feature = "_blocking"))]
+pub(crate) mod client_builder;
 pub(crate) mod config;
 pub(crate) mod content_encoding;
 pub(crate) mod dns;
@@ -13,6 +15,7 @@ pub(crate) mod observe;
 pub(crate) mod otel;
 pub(crate) mod policy;
 pub(crate) mod proxy;
+pub(crate) mod request_body;
 pub(crate) mod request_builder;
 pub(crate) mod retry;
 pub(crate) mod util;

@@ -8,13 +8,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::builder("https://postman-echo.com")
         .client_name("reqx-example-overrides")
         .request_timeout(Duration::from_secs(2))
-        .total_timeout(Duration::from_secs(8))
+        .total_timeout(Some(Duration::from_secs(8)))
         .retry_policy(RetryPolicy::standard().max_attempts(3))
         .build()?;
 
     let fast = client
         .get("/delay/1")
-        .timeout(Duration::from_millis(300))
+        .request_timeout(Duration::from_millis(300))
         .retry_policy(RetryPolicy::disabled())
         .send()
         .await;
@@ -33,8 +33,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let stable = client
         .get("/get")
-        .timeout(Duration::from_secs(2))
-        .total_timeout(Duration::from_secs(3))
+        .request_timeout(Duration::from_secs(2))
+        // Disable the inherited overall deadline; the per-attempt timeout still applies.
+        .total_timeout(None)
         .retry_policy(RetryPolicy::standard().max_attempts(2))
         .send()
         .await?;

@@ -115,6 +115,7 @@ pub(crate) enum TlsClientIdentity {
         cert_chain_pem: Vec<u8>,
         private_key_pem: Vec<u8>,
     },
+    #[cfg(any(test, feature = "_async"))]
     Pkcs12 {
         identity_der: Vec<u8>,
         password: String,
@@ -132,6 +133,7 @@ impl fmt::Debug for TlsClientIdentity {
                 .field("cert_chain_pem_len", &cert_chain_pem.len())
                 .field("private_key_pem_len", &private_key_pem.len())
                 .finish(),
+            #[cfg(any(test, feature = "_async"))]
             Self::Pkcs12 {
                 identity_der,
                 password,
@@ -523,15 +525,35 @@ mod tests {
 #[cfg(test)]
 mod contract_tests;
 
-/// Resolve the application-owned provider without installing an implicit default.
+/// Select the provider explicitly without changing the process-wide default.
+/// Transport builders check their own feature availability before calling this.
 #[cfg(any(
+    feature = "async-tls-rustls-ring",
+    feature = "async-tls-rustls-aws-lc-rs",
+    feature = "async-tls-rustls-graviola",
     feature = "async-tls-rustls-no-provider",
+    feature = "blocking-tls-rustls-ring",
+    feature = "blocking-tls-rustls-aws-lc-rs",
+    feature = "blocking-tls-rustls-graviola",
     feature = "blocking-tls-rustls-no-provider"
 ))]
-pub(crate) fn installed_crypto_provider()
--> crate::Result<std::sync::Arc<rustls::crypto::CryptoProvider>> {
-    rustls::crypto::CryptoProvider::get_default().cloned().ok_or_else(|| Error::TlsBackendInit {
-        backend: TlsBackend::RustlsNoProvider.as_str(),
-        message: "no rustls CryptoProvider is installed as the process-wide default; call CryptoProvider::install_default() before building a rustls-no-provider client".to_owned(),
-    })
+pub(crate) fn rustls_crypto_provider(
+    backend: TlsBackend,
+) -> crate::Result<std::sync::Arc<rustls::crypto::CryptoProvider>> {
+    match backend {
+        #[cfg(any(feature = "async-tls-rustls-ring", feature = "blocking-tls-rustls-ring"))]
+        TlsBackend::RustlsRing => Ok(std::sync::Arc::new(rustls::crypto::ring::default_provider())),
+        #[cfg(any(feature = "async-tls-rustls-aws-lc-rs", feature = "blocking-tls-rustls-aws-lc-rs"))]
+        TlsBackend::RustlsAwsLcRs => Ok(std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider())),
+        #[cfg(any(feature = "async-tls-rustls-graviola", feature = "blocking-tls-rustls-graviola"))]
+        TlsBackend::RustlsGraviola => Ok(std::sync::Arc::new(rustls_graviola::default_provider())),
+        #[cfg(any(feature = "async-tls-rustls-no-provider", feature = "blocking-tls-rustls-no-provider"))]
+        TlsBackend::RustlsNoProvider => {
+            rustls::crypto::CryptoProvider::get_default().cloned().ok_or_else(|| Error::TlsBackendInit {
+                backend: backend.as_str(),
+                message: "no rustls CryptoProvider is installed as the process-wide default; call CryptoProvider::install_default() before building a rustls-no-provider client".to_owned(),
+            })
+        }
+        _ => Err(Error::TlsBackendUnavailable { backend: backend.as_str() }),
+    }
 }

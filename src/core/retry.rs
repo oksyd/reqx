@@ -208,21 +208,7 @@ impl std::fmt::Debug for RetryPolicy {
 impl RetryPolicy {
     /// Returns a policy that disables retries.
     pub fn disabled() -> Self {
-        Self {
-            max_attempts: 1,
-            base_backoff: Duration::from_millis(200),
-            max_backoff: Duration::from_secs(2),
-            jitter_ratio: 0.0,
-            retryable_status_codes: default_retryable_status_codes(),
-            retryable_transport_error_kinds: default_retryable_transport_error_kinds(),
-            retryable_timeout_phases: default_retryable_timeout_phases(),
-            retry_on_response_body_read_error: true,
-            status_retry_windows: BTreeMap::new(),
-            transport_retry_windows: BTreeMap::new(),
-            timeout_retry_windows: BTreeMap::new(),
-            response_body_read_retry_window: None,
-            retry_classifier: None,
-        }
+        Self::standard().max_attempts(1).jitter_ratio(0.0)
     }
 
     /// Returns the default SDK retry policy.
@@ -408,12 +394,8 @@ impl RetryPolicy {
         }
     }
 
-    fn should_retry_status(&self, status: StatusCode) -> bool {
-        self.retryable_status_codes.contains(&status.as_u16())
-    }
-
     pub(crate) fn is_retryable_status(&self, status: StatusCode) -> bool {
-        self.should_retry_status(status)
+        self.retryable_status_codes.contains(&status.as_u16())
     }
 
     fn is_within_retry_window(limit: Option<usize>, attempt: usize) -> bool {
@@ -430,7 +412,7 @@ impl RetryPolicy {
         match decision.reason() {
             RetryReason::Status(status) => {
                 let window = self.status_retry_windows.get(&status.as_u16()).copied();
-                self.should_retry_status(status)
+                self.is_retryable_status(status)
                     && Self::is_within_retry_window(window, decision.attempt())
             }
             RetryReason::Transport(kind) => {
@@ -453,7 +435,11 @@ impl RetryPolicy {
         }
     }
 
-    pub(crate) fn backoff_for_retry(&self, retry_index: usize) -> Duration {
+    /// Computes the configured delay for `retry_index`.
+    ///
+    /// The first retry uses index `1`. Custom backoff sources can call this
+    /// method to reuse the policy's exponential backoff, cap, and jitter.
+    pub fn backoff_for_retry(&self, retry_index: usize) -> Duration {
         exponential_backoff_with_jitter(
             retry_index,
             self.base_backoff,

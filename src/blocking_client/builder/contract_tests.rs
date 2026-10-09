@@ -73,10 +73,10 @@ fn blocking_native_tls_webpki_root_store_is_rejected() {
 
 #[cfg(feature = "_blocking")]
 #[test]
-fn blocking_try_add_no_proxy_rejects_invalid_rule() {
+fn blocking_add_no_proxy_rejects_invalid_rule() {
     crate::test_support::install_crypto_provider();
     let result = crate::blocking_client::Client::builder("https://api.example.com")
-        .try_add_no_proxy("[::1]not-a-port");
+        .add_no_proxy("[::1]not-a-port");
     let error = match result {
         Ok(_) => panic!("invalid no_proxy rule should fail"),
         Err(error) => error,
@@ -87,13 +87,12 @@ fn blocking_try_add_no_proxy_rejects_invalid_rule() {
 
 #[cfg(feature = "_blocking")]
 #[test]
-fn blocking_no_proxy_records_invalid_rule_and_build_fails() {
+fn blocking_no_proxy_rejects_invalid_rules() {
     crate::test_support::install_crypto_provider();
     let result = crate::blocking_client::Client::builder("https://api.example.com")
-        .no_proxy(["example.com", "[::1]not-a-port"])
-        .build();
+        .no_proxy(["example.com", "[::1]not-a-port"]);
     let error = match result {
-        Ok(_) => panic!("invalid no_proxy rule should fail at build time"),
+        Ok(_) => panic!("invalid no_proxy rule should fail immediately"),
         Err(error) => error,
     };
     assert_eq!(error.code(), ErrorCode::InvalidNoProxyRule);
@@ -101,13 +100,12 @@ fn blocking_no_proxy_records_invalid_rule_and_build_fails() {
 
 #[cfg(feature = "_blocking")]
 #[test]
-fn blocking_no_proxy_build_error_redacts_sensitive_url_shaped_rule() {
+fn blocking_no_proxy_rejects_sensitive_url_shaped_rule() {
     crate::test_support::install_crypto_provider();
     let result = crate::blocking_client::Client::builder("https://api.example.com")
-        .no_proxy(["https://user:pass@api.example.com/v1?token=secret"])
-        .build();
+        .no_proxy(["https://user:pass@api.example.com/v1?token=secret"]);
     let error = match result {
-        Ok(_) => panic!("sensitive invalid no_proxy rule should fail at build time"),
+        Ok(_) => panic!("sensitive invalid no_proxy rule should fail immediately"),
         Err(error) => error,
     };
 

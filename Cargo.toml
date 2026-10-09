@@ -2,7 +2,7 @@
 name = "reqx"
 version = "0.2.7"
 edition = "2024"
-rust-version = "1.98.1"
+rust-version = "1.99.0"
 description = "Rust HTTP transport client for API SDK libraries with retry, timeout, idempotency, proxy, and pluggable TLS backends"
 license = "MIT"
 documentation = "https://docs.rs/reqx"
@@ -36,6 +36,7 @@ compression-zstd = ["dep:zstd"]
 
 # Backend-agnostic multipart upload orchestration and checkpoint checksums.
 resumable-upload = ["dep:md5", "dep:sha2", "serde/derive"]
+resumable-upload-async = ["resumable-upload", "dep:tokio"]
 
 # Additive transport+TLS capabilities. Multiple backends may be compiled and
 # selected at runtime with `ClientBuilder::tls_backend`.
@@ -162,7 +163,7 @@ required-features = ["_async"]
 
 [[example]]
 name = "resumable_upload"
-required-features = ["_async", "resumable-upload"]
+required-features = ["resumable-upload-async"]
 
 [[example]]
 name = "retry_classifier"
@@ -186,7 +187,7 @@ required-features = ["_blocking"]
 
 [package.metadata.docs.rs]
 no-default-features = true
-features = ["async-tls-rustls-ring", "blocking-tls-rustls-ring", "compression", "resumable-upload"]
+features = ["async-tls-rustls-ring", "blocking-tls-rustls-ring", "compression", "resumable-upload-async"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [package.metadata.release]

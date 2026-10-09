@@ -136,8 +136,7 @@ pub(crate) struct InFlightGuard {
     inner: Option<Arc<ClientMetricsInner>>,
 }
 
-/// Owns completion accounting from the first poll until a response is returned.
-#[cfg(feature = "_async")]
+/// Owns completion accounting while a request is executing.
 pub(crate) struct PendingRequest {
     metrics: ClientMetrics,
     request_span: Option<OtelRequestSpan>,
@@ -146,14 +145,13 @@ pub(crate) struct PendingRequest {
     completed: bool,
 }
 
-#[cfg(feature = "_async")]
 impl PendingRequest {
     pub(crate) fn complete_success(mut self, status: u16) {
         self.completed = true;
         self.metrics
             .record_request_completed_success(status, self.request_started_at.elapsed());
         if let Some(span) = self.request_span.take() {
-            self.metrics.finish_otel_request_span_success(span, status);
+            self.metrics.otel.finish_request_span_success(span, status);
         }
     }
 
@@ -162,7 +160,7 @@ impl PendingRequest {
         self.metrics
             .record_request_completed_error(error, self.request_started_at.elapsed());
         if let Some(span) = self.request_span.take() {
-            self.metrics.finish_otel_request_span_error(span, error);
+            self.metrics.otel.finish_request_span_error(span, error);
         }
     }
 
@@ -179,14 +177,13 @@ impl PendingRequest {
     }
 }
 
-#[cfg(feature = "_async")]
 impl Drop for PendingRequest {
     fn drop(&mut self) {
         if !self.completed {
             self.metrics
                 .record_request_completed_canceled(self.request_started_at.elapsed());
             if let Some(span) = self.request_span.take() {
-                self.metrics.finish_otel_request_span_canceled(span);
+                self.metrics.otel.finish_request_span_canceled(span);
             }
         }
     }
@@ -198,27 +195,19 @@ pub(crate) struct StreamCompletion {
     request_span: Option<OtelRequestSpan>,
     request_started_at: Instant,
     status: u16,
+    // Taking the guard marks completion; it drops after accounting finishes.
     in_flight_guard: Option<InFlightGuard>,
-    state: StreamCompletionState,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum StreamCompletionState {
-    Pending,
-    Success,
-    Error,
-    Canceled,
 }
 
 fn atomic_saturating_add(counter: &AtomicU64, delta: u64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-        Some(current.saturating_add(delta))
+    counter.update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        current.saturating_add(delta)
     });
 }
 
 fn atomic_saturating_sub(counter: &AtomicU64, delta: u64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-        Some(current.saturating_sub(delta))
+    counter.update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        current.saturating_sub(delta)
     });
 }
 
@@ -234,7 +223,6 @@ impl ClientMetrics {
         }
     }
 
-    #[cfg(feature = "_async")]
     pub(crate) fn pending_request(
         &self,
         method: &Method,
@@ -242,7 +230,7 @@ impl ClientMetrics {
         stream: bool,
         request_started_at: Instant,
     ) -> PendingRequest {
-        let request_span = Some(self.start_otel_request_span(method, uri, stream));
+        let request_span = Some(self.otel.start_request_span(method, uri, stream));
         self.record_request_started();
         PendingRequest {
             metrics: self.clone(),
@@ -251,35 +239,6 @@ impl ClientMetrics {
             in_flight: self.enter_in_flight(),
             completed: false,
         }
-    }
-
-    pub(crate) fn start_otel_request_span(
-        &self,
-        method: &Method,
-        uri: &str,
-        stream: bool,
-    ) -> OtelRequestSpan {
-        self.otel.start_request_span(method, uri, stream)
-    }
-
-    pub(crate) fn finish_otel_request_span_success(
-        &self,
-        request_span: OtelRequestSpan,
-        status: u16,
-    ) {
-        self.otel.finish_request_span_success(request_span, status);
-    }
-
-    pub(crate) fn finish_otel_request_span_error(
-        &self,
-        request_span: OtelRequestSpan,
-        error: &Error,
-    ) {
-        self.otel.finish_request_span_error(request_span, error);
-    }
-
-    pub(crate) fn finish_otel_request_span_canceled(&self, request_span: OtelRequestSpan) {
-        self.otel.finish_request_span_canceled(request_span);
     }
 
     pub(crate) fn record_request_started(&self) {
@@ -308,16 +267,6 @@ impl ClientMetrics {
         self.otel.record_retry();
     }
 
-    #[cfg(feature = "_blocking")]
-    pub(crate) fn record_request_completed(&self, result: Result<u16, &Error>, latency: Duration) {
-        match result {
-            Ok(status) => self.record_request_completed_success(status, latency),
-            Err(error) => {
-                self.record_request_completed_error(error, latency);
-            }
-        }
-    }
-
     pub(crate) fn stream_completion(
         &self,
         request_span: Option<OtelRequestSpan>,
@@ -331,7 +280,6 @@ impl ClientMetrics {
             request_started_at,
             status,
             in_flight_guard: Some(in_flight_guard),
-            state: StreamCompletionState::Pending,
         }
     }
 
@@ -392,6 +340,7 @@ impl ClientMetrics {
                 self.add_http_status_error_count(*status);
             }
             Error::InvalidUri { .. }
+            | Error::InvalidEndpointConfig { .. }
             | Error::InvalidNoProxyRule { .. }
             | Error::InvalidDnsOverrideConfig { .. }
             | Error::InvalidProxyConfig { .. }
@@ -581,44 +530,39 @@ impl Drop for InFlightGuard {
 
 impl StreamCompletion {
     pub(crate) fn complete_success(&mut self) {
-        if self.state != StreamCompletionState::Pending {
+        let Some(_in_flight) = self.in_flight_guard.take() else {
             return;
-        }
-        self.state = StreamCompletionState::Success;
+        };
         let latency = self.request_started_at.elapsed();
         self.metrics
             .record_request_completed_success(self.status, latency);
         if let Some(span) = self.request_span.take() {
             self.metrics
-                .finish_otel_request_span_success(span, self.status);
+                .otel
+                .finish_request_span_success(span, self.status);
         }
-        let _ = self.in_flight_guard.take();
     }
 
     pub(crate) fn complete_error(&mut self, error: &Error) {
-        if self.state != StreamCompletionState::Pending {
+        let Some(_in_flight) = self.in_flight_guard.take() else {
             return;
-        }
-        self.state = StreamCompletionState::Error;
+        };
         let latency = self.request_started_at.elapsed();
         self.metrics.record_request_completed_error(error, latency);
         if let Some(span) = self.request_span.take() {
-            self.metrics.finish_otel_request_span_error(span, error);
+            self.metrics.otel.finish_request_span_error(span, error);
         }
-        let _ = self.in_flight_guard.take();
     }
 
     pub(crate) fn complete_canceled(&mut self) {
-        if self.state != StreamCompletionState::Pending {
+        let Some(_in_flight) = self.in_flight_guard.take() else {
             return;
-        }
-        self.state = StreamCompletionState::Canceled;
+        };
         let latency = self.request_started_at.elapsed();
         self.metrics.record_request_completed_canceled(latency);
         if let Some(span) = self.request_span.take() {
-            self.metrics.finish_otel_request_span_canceled(span);
+            self.metrics.otel.finish_request_span_canceled(span);
         }
-        let _ = self.in_flight_guard.take();
     }
 }
 
