@@ -3,7 +3,18 @@ use http::{HeaderMap, Method, StatusCode};
 use crate::core::error::Error;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// Redirect handling policy.
+/// Redirect handling policy with a logical-request hop limit.
+///
+/// Disabled by default. Follows 301, 302, 303, 307, and 308 up to the configured
+/// hop limit. POST changes to GET for 301/302; 303 changes non-HEAD methods to GET.
+/// These rewrites drop the body. Other cases preserve method/body and require a
+/// replayable body; a consumed reader/stream returns `Error::RedirectBodyNotReplayable`.
+///
+/// Sensitive/hop-scoped credentials are removed when crossing origins. Custom
+/// sensitive header values must be marked sensitive. The policy does not restrict
+/// redirects to a caller allowlist; disable following and validate destinations
+/// yourself when that is required. Retry attempts and redirect hops have separate
+/// counters; the original total deadline covers both.
 pub struct RedirectPolicy {
     max_redirects: usize,
 }
@@ -55,7 +66,13 @@ mod tests {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-/// How HTTP statuses should be surfaced to the caller.
+/// How final HTTP statuses should be surfaced to the caller.
+///
+/// Retryable statuses are handled first, regardless of this policy. `Error`
+/// accepts only 2xx; `Response` also returns final non-2xx statuses as `Ok`.
+/// Neither changes body decoding, size bounds, transport errors, or deadlines.
+/// A retryable non-2xx response still counts as a resilience failure when returned
+/// under `Response`. With redirects disabled, 3xx responses follow this policy.
 pub enum StatusPolicy {
     #[default]
     /// Treat non-success statuses as [`Error::HttpStatus`](crate::Error::HttpStatus).
@@ -108,7 +125,10 @@ impl RequestContext {
         &self.uri
     }
 
-    /// Returns the current attempt number, starting at `1`.
+    /// Returns the retry attempt number, starting at `1`.
+    ///
+    /// Followed redirects keep this number and increment [`Self::redirect_count`].
+    /// A scheduled retry increments this number; it is not a count of every hop.
     pub fn attempt(&self) -> usize {
         self.attempt
     }
@@ -124,7 +144,38 @@ impl RequestContext {
     }
 }
 
-/// Active hook for mutating or observing request execution.
+/// Active hook for mutating or observing request attempts.
+///
+/// Registered hooks run synchronously, in registration order, for each transport
+/// attempt (including retries and followed redirects). They can be called
+/// concurrently by client clones and should not block an async executor.
+/// Request hooks mutate headers; response hooks observe status/headers before
+/// buffering or decoding, including responses that will be retried or redirected.
+///
+/// Error hooks cover terminal errors emitted by the attempt driver. Preparation
+/// errors, global queue errors before attempts, returned stream I/O, and later
+/// JSON/text conversions are handled through their returned results instead.
+/// Callbacks do not replace transport error handling. Panics are not caught.
+///
+/// The header example requires `http` as an application dependency.
+///
+/// ```
+/// # #[cfg(feature = "_async")]
+/// # fn example() -> reqx::Result<()> {
+/// use std::sync::Arc;
+/// use reqx::advanced::{Interceptor, RequestContext};
+/// struct AcceptJson;
+/// impl Interceptor for AcceptJson {
+///     fn on_request(&self, _: &RequestContext, headers: &mut http::HeaderMap) {
+///         headers.insert(http::header::ACCEPT, http::HeaderValue::from_static("application/json"));
+///     }
+/// }
+/// let client = reqx::Client::builder("https://example.com")
+///     .interceptor(Arc::new(AcceptJson))
+///     .build()?;
+/// # Ok(())
+/// # }
+/// ```
 pub trait Interceptor: Send + Sync {
     /// Called before a request is sent. Interceptors may mutate headers.
     ///

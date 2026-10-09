@@ -87,11 +87,19 @@ impl RequestBuilder {
     }
 
     /// Sets the `Idempotency-Key` header for retry-safe mutations.
+    ///
+    /// Use a stable key for the same logical operation, and only with a server
+    /// that implements idempotency. The key makes a replayable request eligible
+    /// for retry; it does not make a reader/stream body replayable or implement
+    /// server-side deduplication. Invalid header values return an error now.
     pub fn idempotency_key(self, key: &str) -> crate::Result<Self> {
         self.try_header(IDEMPOTENCY_KEY_HEADER, key)
     }
 
     /// Appends one query parameter pair.
+    ///
+    /// Values are form percent-encoded (including spaces as `+`); repeated keys
+    /// are retained. Parameters are appended to any query already in the path.
     pub fn query_pair(mut self, name: impl AsRef<str>, value: impl AsRef<str>) -> Self {
         url::form_urlencoded::Serializer::new(&mut self.query)
             .append_pair(name.as_ref(), value.as_ref());
@@ -122,6 +130,10 @@ impl RequestBuilder {
     }
 
     /// Sets a fully buffered request body.
+    ///
+    /// Buffered bytes can be replayed for eligible retries and redirects.
+    /// Replaces a previous body and clears stale `Content-Length` metadata.
+    /// Prefer this or [`Self::json`] for a body that must support retries.
     pub fn body(mut self, body: impl Into<Bytes>) -> Self {
         self.clear_content_length();
         self.body = Some(RequestBody::Buffered(body.into()));
@@ -129,6 +141,11 @@ impl RequestBuilder {
     }
 
     /// Streams a blocking reader as the request body.
+    ///
+    /// The reader is moved and consumed once; automatic retries are disabled
+    /// even with an idempotency key. Redirects requiring replay return
+    /// `Error::RedirectBodyNotReplayable`; redirects that drop the body can proceed.
+    /// The owned reader must be `Send + 'static`, but need not be `Sync`.
     ///
     /// Preserves an explicitly supplied `Content-Length`, but clears a length
     /// set by an earlier `body_reader_with_length` call.
@@ -144,6 +161,11 @@ impl RequestBuilder {
     }
 
     /// Streams a blocking reader as the request body and sets `Content-Length`.
+    ///
+    /// Declare the exact byte count expected from the reader. The helper does
+    /// not pre-read or buffer it to check this declaration, and the body remains
+    /// non-replayable. Replacing the reader through another body helper removes
+    /// this helper-supplied length; transport framing validates explicit headers.
     pub fn body_reader_with_length<R>(self, reader: R, content_length: u64) -> Self
     where
         R: Read + Send + 'static,
@@ -206,6 +228,10 @@ impl RequestBuilder {
     }
 
     /// Overrides the buffered response body size limit for this request.
+    ///
+    /// Applies to wire and decoded bytes for [`Self::send`]. Zero accepts only
+    /// an empty body. Raw [`Self::send_stream`] consumption is bounded through
+    /// the stream's explicit limited helpers instead.
     pub fn max_response_body_bytes(mut self, max_response_body_bytes: usize) -> Self {
         self.execution_overrides.max_response_body_bytes = Some(max_response_body_bytes);
         self
@@ -224,6 +250,10 @@ impl RequestBuilder {
     }
 
     /// Overrides status handling for this request.
+    ///
+    /// `StatusPolicy::Response` returns the final non-2xx response as `Ok`.
+    /// Status retries still run first; body limits, decoding, transport failures,
+    /// and deadlines still produce errors. See [`StatusPolicy`].
     pub fn status_policy(mut self, status_policy: StatusPolicy) -> Self {
         self.execution_overrides.status_policy = Some(status_policy);
         self
@@ -239,6 +269,12 @@ impl RequestBuilder {
     }
 
     /// Executes the request and applies the effective [`StatusPolicy`].
+    ///
+    /// Consumes this builder, buffers the complete response, and decodes enabled
+    /// HTTP content encodings within the effective body limit. Eligible transport,
+    /// status, and body-read failures may retry before a final response or error
+    /// is returned. JSON/text conversion is a separate step after transport
+    /// completion. See [`Self::send_stream`] for incremental consumption.
     pub fn send(self) -> crate::Result<Response> {
         self.client.send_request(
             self.method,
@@ -252,6 +288,12 @@ impl RequestBuilder {
     /// Executes the request and returns a streaming response body.
     ///
     /// Non-success HTTP statuses still follow the effective [`StatusPolicy`].
+    /// Returns once final headers are available. Reader/download helpers yield
+    /// original content-encoded bytes; decoded conversions apply an explicit
+    /// wire/decoded bound. The buffered body limit does not cap raw stream reads.
+    /// Finish or drop the stream to release concurrency permits. Later I/O errors
+    /// are returned to the consumer and do not restart the HTTP request.
+    /// See [`BlockingResponseStream`] for the complete stream contract.
     pub fn send_stream(self) -> crate::Result<BlockingResponseStream> {
         self.client.send_request_stream(
             self.method,
@@ -263,6 +305,12 @@ impl RequestBuilder {
     }
 
     /// Streams the response body into `writer`.
+    ///
+    /// Copies original content-encoded bytes and flushes the writer. There is
+    /// no implicit buffered-body limit; use [`Self::download_to_writer_limited`]
+    /// for bounded downloads. Writer errors become `Error::WriteBody` and can
+    /// leave partial output. Arbitrary caller-owned blocking writes cannot be
+    /// interrupted while running; deadline checks occur around them.
     pub fn download_to_writer<W>(self, writer: &mut W) -> crate::Result<u64>
     where
         W: std::io::Write + ?Sized,
@@ -271,6 +319,10 @@ impl RequestBuilder {
     }
 
     /// Streams the response body into `writer`, enforcing `max_bytes`.
+    ///
+    /// Bounds original content-encoded bytes and flushes the writer. Does not
+    /// decode compression. Read/write/deadline failures can leave partial output;
+    /// use a temporary sink when the application needs atomic replacement.
     pub fn download_to_writer_limited<W>(
         self,
         writer: &mut W,
@@ -284,6 +336,11 @@ impl RequestBuilder {
     }
 
     /// Executes the request, buffers the body, and deserializes it as JSON.
+    ///
+    /// Equivalent to [`Self::send`] followed by [`Response::json`]. JSON errors
+    /// occur after transport completion and are not retried. With
+    /// `StatusPolicy::Response`, a non-2xx JSON body is also deserialized; inspect
+    /// status with `send()` first when that distinction matters.
     pub fn send_json<T>(self) -> crate::Result<T>
     where
         T: DeserializeOwned,

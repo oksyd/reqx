@@ -104,13 +104,23 @@ impl RetryDecision {
     }
 }
 
-/// Custom classifier that can override built-in retry decisions.
+/// Custom classifier that can override built-in failure classification.
+///
+/// Called synchronously for candidate status, transport, timeout, or buffered
+/// body-read failures. It cannot override replayability, [`RetryEligibility`],
+/// maximum attempts, retry budget, or the overall deadline. Returned stream I/O
+/// and JSON/text conversion failures are outside automatic request retries.
 pub trait RetryClassifier: Send + Sync {
     /// Returns whether the request should be retried.
     fn should_retry(&self, decision: &RetryDecision) -> bool;
 }
 
 /// Predicate that decides whether a request is eligible for retries at all.
+///
+/// Eligibility is checked during preparation and tightened after interceptors
+/// mutate attempt headers. Adding a header later cannot expand initial eligibility.
+/// A body must also be replayable; this predicate cannot enable resending a stream.
+/// Implementations run inline and can be shared across concurrent client clones.
 pub trait RetryEligibility: Send + Sync {
     /// Returns whether a request with `method` and `headers` may be retried.
     fn supports_retry(&self, method: &Method, headers: &HeaderMap) -> bool;
@@ -118,6 +128,10 @@ pub trait RetryEligibility: Send + Sync {
 
 #[derive(Default)]
 /// Retry eligibility that only allows idempotent methods or explicit idempotency keys.
+///
+/// This is the default. Accepts GET, HEAD, PUT, DELETE, OPTIONS, TRACE, or any
+/// request carrying `Idempotency-Key`. Body replayability is checked separately;
+/// the application is responsible for the server's idempotency behavior.
 pub struct StrictRetryEligibility;
 
 impl RetryEligibility for StrictRetryEligibility {
@@ -127,7 +141,10 @@ impl RetryEligibility for StrictRetryEligibility {
 }
 
 #[derive(Default)]
-/// Retry eligibility that treats every request as retryable.
+/// Retry eligibility that treats every method/header combination as eligible.
+///
+/// Body replayability, failure classification, attempt limits, and deadlines
+/// still apply. Use only when the application can safely repeat the operation.
 pub struct PermissiveRetryEligibility;
 
 impl RetryEligibility for PermissiveRetryEligibility {
@@ -138,6 +155,21 @@ impl RetryEligibility for PermissiveRetryEligibility {
 
 #[derive(Clone)]
 /// Retry policy covering attempts, backoff, and retryable failure classes.
+///
+/// Defaults to 3 attempts including the initial send, 200 ms exponential backoff,
+/// a 2 s backoff ceiling, and 0.2 jitter ratio. Default retryable statuses are
+/// 429, 500, 502, 503, and 504; transport kinds are DNS, connect, and read; timeout
+/// phases are transport and response-body. Buffered body-read failures are enabled.
+/// Valid `Retry-After` values replace the status backoff up to the backoff ceiling.
+///
+/// Attempt caps count the initial send plus retries; redirect hops have a
+/// separate limit. A request must satisfy [`RetryEligibility`] and have a replayable body.
+/// Retries happen before final status handling, including the response status
+/// policy. Once a body stream is returned, consumer failures cannot restart it.
+/// JSON/text conversion failures do not trigger retries. Set
+/// [`Self::max_attempts`] to `1` or use [`Self::disabled`] to disable retries.
+/// Invalid attempt counts, delays, jitter, or retry windows are rejected when
+/// building a client or validating an explicit request override.
 ///
 /// See also:
 ///

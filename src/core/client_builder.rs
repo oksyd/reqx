@@ -32,7 +32,26 @@ use crate::tls::{TlsBackend, TlsClientIdentity, TlsOptions, TlsRootCertificate, 
 /// Shared client configuration with transport-specific settings.
 ///
 /// Obtain a builder from the async or blocking client's `builder()` method.
-/// Each transport exposes only the settings it supports.
+/// `T` is `advanced::AsyncTransportOptions` or `advanced::BlockingTransportOptions`;
+/// it is normally inferred. Blocking code also has the `blocking::ClientBuilder`
+/// type alias. Each transport exposes only the settings it supports.
+///
+/// Common defaults are listed in the [crate documentation](crate). Setters apply
+/// in call order and `build()` validates the completed configuration. `no_proxy`
+/// and DNS override setters return `Result` for invalid arguments immediately.
+/// After building, client clones share immutable settings and control state.
+///
+/// A common configuration helper needs no adapter trait:
+///
+/// ```
+/// # #[cfg(any(feature = "_async", feature = "_blocking"))]
+/// fn configure<T>(builder: reqx::ClientBuilder<T>) -> reqx::ClientBuilder<T> {
+///     builder
+///         .request_timeout(std::time::Duration::from_secs(3))
+///         .total_timeout(Some(std::time::Duration::from_secs(8)))
+///         .max_in_flight(Some(16))
+/// }
+/// ```
 pub struct ClientBuilder<T> {
     pub(crate) base_url: String,
     pub(crate) default_headers: HeaderMap,
@@ -125,6 +144,10 @@ impl<T> ClientBuilder<T> {
 
     /// Sets the per-attempt request timeout.
     ///
+    /// Defaults to 10 seconds. The transport and buffered body-read phases each
+    /// receive a timeout capped by the remaining total deadline. Streaming reads
+    /// also use a per-read timeout; this value alone does not bound queue waits,
+    /// all retries, or the lifetime of a response stream.
     /// A zero duration is rejected by `build()`.
     pub fn request_timeout(mut self, request_timeout: Duration) -> Self {
         self.request_timeout = request_timeout;
@@ -135,6 +158,12 @@ impl<T> ClientBuilder<T> {
     ///
     /// `None` disables the overall deadline. Per-attempt timeouts still apply.
     ///
+    /// Disabled by default. Includes concurrency/rate-limit queue waits, retry
+    /// backoff, redirects, transport work, and body consumption. Starts after
+    /// request preparation; caller serialization and endpoint callbacks are not
+    /// covered. For a returned stream the original deadline continues to apply.
+    /// Blocking I/O adapters can check the deadline around caller-owned
+    /// reads/writes, but cannot interrupt arbitrary user code inside those calls.
     /// A zero duration is rejected by `build()`.
     pub fn total_timeout(mut self, total_timeout: Option<Duration>) -> Self {
         self.total_timeout = total_timeout;
@@ -154,6 +183,11 @@ impl<T> ClientBuilder<T> {
     }
 
     /// Sets the default buffered response body size limit in bytes.
+    ///
+    /// Defaults to 8 MiB. Both received and decompressed bodies must fit the
+    /// limit. Zero accepts only an empty body. This setting applies to `send()`;
+    /// raw streaming reads and downloads need their own explicit limit. Use a
+    /// stream's `into_response_limited` to bound wire and decoded bytes together.
     pub fn max_response_body_bytes(mut self, max_response_body_bytes: usize) -> Self {
         self.max_response_body_bytes = max_response_body_bytes;
         self
@@ -285,12 +319,19 @@ impl<T> ClientBuilder<T> {
     }
 
     /// Enables or disables automatic `Accept-Encoding` for buffered responses.
+    ///
+    /// Enabled by default. Advertises the compiled compression codecs, skips
+    /// HEAD and Range requests, and preserves explicitly supplied header values.
     pub fn buffered_auto_accept_encoding(mut self, enabled: bool) -> Self {
         self.buffered_auto_accept_encoding = enabled;
         self
     }
 
     /// Enables or disables automatic `Accept-Encoding` for streaming responses.
+    ///
+    /// Disabled by default because reader/download operations yield original
+    /// content-encoded bytes. This does not change how stream conversions decode
+    /// bodies or override an explicit `Accept-Encoding` header.
     pub fn stream_auto_accept_encoding(mut self, enabled: bool) -> Self {
         self.stream_auto_accept_encoding = enabled;
         self
@@ -398,6 +439,10 @@ impl<T> ClientBuilder<T> {
     /// Sets the endpoint selector used for multi-endpoint clients.
     ///
     /// `None` uses the configured base URL directly.
+    /// Selection is made once during request preparation, before attempts.
+    /// Retries do not select a new endpoint; redirects use their own target URI.
+    /// The shared selector must support concurrent calls across client clones.
+    /// See [`EndpointSelector`] for the borrowed-URL contract.
     pub fn endpoint_selector(
         mut self,
         endpoint_selector: Option<Arc<dyn EndpointSelector>>,
@@ -505,7 +550,9 @@ impl<T> ClientBuilder<T> {
     /// Caps the total number of in-flight requests.
     ///
     /// `Some(0)` is rejected by `build()`. `None` disables this control,
-    /// including a previously configured limit.
+    /// including a previously configured limit. Defaults to `None`.
+    /// A slot covers the logical request, including backoff and redirects. For
+    /// streams it remains held until body completion, failure, or drop.
     pub fn max_in_flight(mut self, max_in_flight: Option<usize>) -> Self {
         self.max_in_flight = max_in_flight;
         self
@@ -514,13 +561,20 @@ impl<T> ClientBuilder<T> {
     /// Caps the number of in-flight requests per host.
     ///
     /// `Some(0)` is rejected by `build()`. `None` disables this control,
-    /// including a previously configured limit.
+    /// including a previously configured limit. Defaults to `None`.
+    /// Buckets use normalized hostnames plus effective ports. Redirects acquire
+    /// the target bucket. A retry releases its host slot before backoff; a
+    /// returned stream holds its current host slot until completion or drop.
     pub fn max_in_flight_per_host(mut self, max_in_flight_per_host: Option<usize>) -> Self {
         self.max_in_flight_per_host = max_in_flight_per_host;
         self
     }
 
     /// Enables in-process metrics collection.
+    ///
+    /// Disabled by default. Client clones share the counters. A returned stream
+    /// remains in flight until EOF, failure, or drop. This is independent of
+    /// [`Self::otel_enabled`]; see [`crate::advanced::MetricsSnapshot`].
     pub fn metrics_enabled(mut self, enabled: bool) -> Self {
         self.metrics_enabled = enabled;
         self
@@ -528,8 +582,11 @@ impl<T> ClientBuilder<T> {
 
     /// Enables OpenTelemetry observer emission.
     ///
-    /// `build()` returns [`crate::Error::FeatureUnavailable`] when the
-    /// crate was compiled without the `otel` feature.
+    /// Disabled by default. Enabling emission requires the `otel` feature;
+    /// otherwise `build()` returns [`crate::Error::FeatureUnavailable`].
+    /// Configure application-owned global OpenTelemetry meter/tracer providers
+    /// and exporters first. This crate emits telemetry but does not install an
+    /// SDK/exporter. In-process snapshots use [`Self::metrics_enabled`] separately.
     pub fn otel_enabled(mut self, enabled: bool) -> Self {
         self.otel_enabled = enabled;
         self
@@ -545,18 +602,30 @@ impl<T> ClientBuilder<T> {
     }
 
     /// Registers a request/response interceptor.
+    ///
+    /// Multiple interceptors run in registration order, inline with each attempt.
+    /// The `Arc` can be shared across clients; implementations must be thread-safe
+    /// and should avoid blocking the async executor. See [`Interceptor`].
     pub fn interceptor(mut self, interceptor: Arc<dyn Interceptor>) -> Self {
         self.interceptors.push(interceptor);
         self
     }
 
     /// Registers an observer that receives lifecycle callbacks.
+    ///
+    /// Observers run inline, in registration order, and receive events per attempt
+    /// rather than only once per logical request. See [`Observer`].
     pub fn observer(mut self, observer: Arc<dyn Observer>) -> Self {
         self.observers.push(observer);
         self
     }
 
     /// Applies a bundle of profile defaults.
+    ///
+    /// Replaces request timeout, total deadline, retry policy, buffered size limit,
+    /// redirect policy, and status policy at this point in the builder chain.
+    /// Other settings are retained; later setters can override profile values.
+    /// See [`ClientProfile`] for the preset values.
     pub fn profile(mut self, profile: ClientProfile) -> Self {
         let defaults = profile.defaults();
         self.request_timeout = defaults.request_timeout;

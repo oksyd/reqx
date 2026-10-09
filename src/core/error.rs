@@ -269,7 +269,33 @@ impl ErrorCode {
 
 #[derive(thiserror::Error)]
 #[non_exhaustive]
-/// Error returned by `reqx`.
+/// Typed failure returned by HTTP configuration, execution, or response helpers.
+///
+/// Use [`Self::code`] for stable classification. `Display` and `Debug` messages
+/// are diagnostic text and may evolve. This enum is non-exhaustive; match known
+/// variants or codes with a fallback. A final non-2xx status becomes [`Self::HttpStatus`]
+/// under the error status policy; the response policy instead returns that status.
+/// Transport, deadline, framing, body-read/size/decoding failures remain errors
+/// under either status policy.
+///
+/// Method/URI metadata is present only when an HTTP request exists. Library
+/// request URI metadata is redacted; HTTP body previews, JSON/text excerpts, and
+/// underlying source errors may contain application data. Stream reader traits
+/// wrap these errors in `std::io::Error`; their helpers return `reqx::Result`.
+/// Resumable uploads use the separate `advanced::ResumableUploadError<E>` type.
+///
+/// ```
+/// fn report(error: &reqx::Error) {
+///     match error.code() {
+///         reqx::ErrorCode::DeadlineExceeded => eprintln!("request deadline elapsed"),
+///         reqx::ErrorCode::HttpStatus => eprintln!("server rejected the request"),
+///         _ => eprintln!("transport result: {}", error.code().as_str()),
+///     }
+///     if let Some(uri) = error.request_uri_redacted() {
+///         eprintln!("request URI: {uri}");
+///     }
+/// }
+/// ```
 pub enum Error {
     /// The base URL or request URI was invalid.
     #[error("invalid request uri: {uri}")]

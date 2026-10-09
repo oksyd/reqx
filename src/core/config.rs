@@ -17,6 +17,18 @@ pub(crate) const DEFAULT_CLIENT_NAME: &str = "reqx";
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 /// Preset transport defaults tuned for common SDK traffic patterns.
+///
+/// | Profile | Request timeout | Total deadline | Attempts | Buffered limit |
+/// | --- | --- | --- | --- | --- |
+/// | `StandardSdk` (default) | 10 s | None | 3 | 8 MiB |
+/// | `LowLatency` | 2 s | 5 s | 2 | 2 MiB |
+/// | `HighThroughput` | 20 s | 60 s | 4 | 32 MiB |
+///
+/// All profiles disable redirects and use the error status policy. Retry counts
+/// include the first attempt and remain subject to request eligibility. Profiles
+/// do not enable concurrency, rate limits, metrics, or OpenTelemetry. Applying
+/// a profile replaces request/total timeouts, attempts/backoff policy, body limit,
+/// redirect policy, and status policy; apply custom overrides afterwards.
 pub enum ClientProfile {
     #[default]
     /// Balanced defaults for general SDK API traffic.

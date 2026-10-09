@@ -19,7 +19,53 @@ mod tests;
 /// Drives resumable uploads with shared chunking, retry, and verification settings.
 ///
 /// Use `upload_blocking`/`resume_blocking` for synchronous backends and
-/// `upload_async`/`resume_async` for asynchronous backends.
+/// `upload_async`/`resume_async` for asynchronous backends. The base
+/// `resumable-upload` feature is independent of HTTP/TLS; async methods require
+/// `resumable-upload-async` explicitly and use Tokio I/O/time.
+///
+/// # Backend and source contract
+///
+/// Implements sequential multipart orchestration over your storage backend:
+/// create a session, read bounded chunks, retry each part, then finalize ordered
+/// part metadata. It supplies no service-specific HTTP/storage implementation.
+/// Parts are one-based; the final part can be shorter. Empty input is rejected.
+/// The backend must support retrying the same upload id/part number/content.
+/// Upload retries are independent of any HTTP retries inside that backend.
+/// Options are validated at the start of an operation, before backend/source I/O.
+///
+/// # Persistence and resume
+///
+/// Save [`ResumableUploadError::checkpoint`] when an error carries one. The
+/// checkpoint is serializable; persistence and reloading belong to the caller.
+/// Resume from byte zero of the complete unchanged source, using the same part
+/// size and checksum algorithm. The uploader rereads chunks, checks completed
+/// metadata, and skips matching parts. It does not seek the source, list remote
+/// parts, or persist progress automatically. Without checksums, equal size alone
+/// cannot detect changed source contents.
+///
+/// Checkpoints are returned on recoverable operation errors, not continuously
+/// during an upload. Abrupt process termination or async cancellation does not
+/// return a checkpoint or automatically abort the remote session. Backends can
+/// provide additional durable state when the application needs crash recovery.
+/// `abort_on_error` defaults to false; enabling it can invalidate a checkpoint's
+/// remote session. Only the explicit current checkpoint schema is accepted.
+///
+/// ```no_run
+/// # #[cfg(feature = "resumable-upload")]
+/// fn transfer<B: reqx::advanced::BlockingResumableUploadBackend>(
+///     backend: &B,
+///     source_from_start: &mut impl std::io::Read,
+///     saved: Option<reqx::advanced::ResumableUploadCheckpoint>,
+/// ) -> Result<reqx::advanced::ResumableUploadResult,
+///             reqx::advanced::ResumableUploadError<B::Error>> {
+///     let uploader = reqx::advanced::ResumableUploader::default();
+///     match saved {
+///         Some(checkpoint) => uploader.resume_blocking(backend, source_from_start, checkpoint),
+///         None => uploader.upload_blocking(backend, source_from_start),
+///     }
+/// }
+/// # fn main() {}
+/// ```
 #[derive(Debug, Default)]
 pub struct ResumableUploader {
     options: ResumableUploadOptions,
@@ -27,6 +73,9 @@ pub struct ResumableUploader {
 
 impl ResumableUploader {
     /// Creates an uploader with the provided options.
+    ///
+    /// Construction is infallible; upload/resume validates the options before I/O.
+    /// `Default` uses [`ResumableUploadOptions::default`].
     pub fn new(options: ResumableUploadOptions) -> Self {
         Self { options }
     }
@@ -127,6 +176,28 @@ impl UploadedPart {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 /// Serializable checkpoint used to resume multipart uploads.
+///
+/// Records an opaque backend session id, current schema version, part size,
+/// checksum algorithm, and confirmed completed parts. Keys are one-based and
+/// must equal each entry's `part_number`. A checkpoint describes the last known
+/// successful progress; it does not prove that the remote session still exists.
+///
+/// Save/load with your chosen Serde format, then pass it to an uploader configured
+/// with exactly the same part size and checksum algorithm. Resume rereads the
+/// complete source from byte zero. Missing/older schema versions are rejected;
+/// create new checkpoints through [`Self::new`] to set the current version.
+/// The JSON example requires `serde_json` as an application dependency.
+///
+/// ```
+/// # #[cfg(feature = "resumable-upload")]
+/// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let checkpoint = reqx::advanced::ResumableUploadCheckpoint::new("session-id", 8 * 1024 * 1024);
+/// let saved = serde_json::to_string(&checkpoint)?;
+/// let restored: reqx::advanced::ResumableUploadCheckpoint = serde_json::from_str(&saved)?;
+/// assert_eq!(restored.version, reqx::advanced::RESUMABLE_UPLOAD_CHECKPOINT_VERSION);
+/// # Ok(())
+/// # }
+/// ```
 pub struct ResumableUploadCheckpoint {
     /// Explicit schema version; resuming accepts only the current version.
     pub version: u32,
@@ -172,6 +243,18 @@ pub struct ResumableUploadResult {
 
 #[derive(Clone, Debug)]
 /// Options controlling resumable upload chunking, retries, and verification.
+///
+/// Defaults: 8 MiB parts, 3 attempts per part (including its first call), 200 ms
+/// base backoff, 2 s ceiling, 0.2 jitter ratio, no automatic abort, no checksums,
+/// and no remote ETag verification. These are separate from HTTP client settings.
+/// There is no whole-upload timeout; the backend/caller owns time limits.
+///
+/// Invalid values are rejected by upload/resume before I/O: part size and attempt
+/// count must be positive, backoffs must be positive with ceiling >= base, and
+/// jitter must be finite in `0.0..=1.0`. Remote ETag verification requires a
+/// configured checksum algorithm. Source/backend limits such as minimum part
+/// sizes, object limits, or storage-service maximum part counts belong to the
+/// backend; this checkpoint format supports part numbers up to `u32::MAX`.
 pub struct ResumableUploadOptions {
     part_size: usize,
     max_attempts: usize,
@@ -220,6 +303,11 @@ impl ResumableUploadOptions {
     }
 
     /// Aborts the remote upload when a terminal error is encountered.
+    ///
+    /// Defaults to false so an error checkpoint can remain resumable. When true,
+    /// the backend's `abort_upload` is called after operation errors; a failed
+    /// abort returns `AbortFailed` with the original error. Dropping/canceling an
+    /// async operation does not run this asynchronous cleanup.
     pub fn with_abort_on_error(mut self, abort_on_error: bool) -> Self {
         self.abort_on_error = abort_on_error;
         self
@@ -598,6 +686,11 @@ where
     E: std::error::Error + Send + Sync + 'static,
 {
     /// Returns the checkpoint carried by this error, when available.
+    ///
+    /// Operation failures after a session exists can carry the last confirmed
+    /// parts. Configuration, create-session, and invalid-checkpoint failures may
+    /// have no checkpoint. Persist this value before retrying from a fresh source.
+    /// If automatic abort was enabled, verify remote session availability first.
     pub fn checkpoint(&self) -> Option<&ResumableUploadCheckpoint> {
         match self {
             Self::SourceRead { checkpoint, .. }
@@ -635,6 +728,23 @@ where
 }
 
 /// Backend contract for blocking resumable uploads.
+///
+/// Provides storage-protocol operations; it is not coupled to a reqx HTTP client.
+/// Calls are sequential. `create_upload` and `complete_upload` are each called
+/// once; only `upload_part` calls are automatically retried, up to the configured
+/// attempt limit, on any backend error. Retrying a part must replace/reuse the
+/// same session/part number with identical bytes safely.
+///
+/// Return [`UploadedPart`] with matching one-based number and byte length. ETags
+/// are opaque by default. With a configured checksum, a backend-provided checksum
+/// is validated; otherwise the uploader records its local checksum in the
+/// checkpoint. Remote ETag verification additionally requires the ETag to encode
+/// that checksum, which is an opt-in service-specific guarantee.
+///
+/// Finalization receives parts sorted by part number, including reused parts.
+/// The default `abort_upload` is a no-op; implement remote cleanup when enabling
+/// automatic abort. Backend timeout/retry settings are independent of uploader
+/// retries. Resume trusts checkpoints and never automatically lists remote state.
 pub trait BlockingResumableUploadBackend {
     /// Backend-specific error type.
     type Error: std::error::Error + Send + Sync + 'static;
@@ -662,6 +772,26 @@ pub trait BlockingResumableUploadBackend {
 }
 
 /// Backend contract for async resumable uploads.
+///
+/// Has the same sequential, idempotent part, metadata, retry, and abort contract
+/// as [`BlockingResumableUploadBackend`]. Returned futures must be `Send`;
+/// implementations may use `async fn` directly, with no `async_trait` dependency.
+/// The trait uses generic static dispatch and is not a `dyn` backend interface.
+/// Runtime and storage transport are owned by the application/backend.
+///
+/// ```no_run
+/// # #[cfg(feature = "resumable-upload-async")]
+/// async fn upload_bytes<B: reqx::advanced::AsyncResumableUploadBackend>(
+///     backend: &B,
+///     data: &[u8],
+/// ) -> Result<reqx::advanced::ResumableUploadResult,
+///             reqx::advanced::ResumableUploadError<B::Error>> {
+///     let mut source = data;
+///     reqx::advanced::ResumableUploader::default()
+///         .upload_async(backend, &mut source).await
+/// }
+/// # fn main() {}
+/// ```
 #[cfg(feature = "resumable-upload-async")]
 #[cfg_attr(docsrs, doc(cfg(feature = "resumable-upload-async")))]
 pub trait AsyncResumableUploadBackend {

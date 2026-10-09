@@ -17,7 +17,23 @@ use crate::core::error::Error;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-/// TLS backend used by the transport.
+/// TLS backend selected at runtime from capabilities compiled into the client.
+///
+/// Each transport needs its matching Cargo feature. Selecting an unavailable
+/// backend fails at construction with `Error::TlsBackendUnavailable`. When more
+/// than one backend is compiled, the default priority for that transport is
+/// ring, AWS-LC, native TLS, Graviola, then the caller-installed provider.
+/// Cargo features are additive: use `default-features = false` to replace the
+/// default ring backend, and select a backend explicitly when combining features.
+///
+/// Ring, AWS-LC, and Graviola are configured directly per client. The no-provider
+/// variant uses an application-installed process-wide rustls provider; install
+/// it once before building clients. It returns `Error::TlsBackendInit` if missing.
+/// Graviola's provider selection does not change upload checksums or retry jitter.
+///
+/// Async rustls/native backends support TLS version bounds. Blocking ureq
+/// does not expose version-bound setters. Root-store and identity limitations
+/// are documented on `ClientBuilder` and [`TlsRootStore`].
 pub enum TlsBackend {
     /// `rustls` backed by the `ring` crypto provider.
     RustlsRing,

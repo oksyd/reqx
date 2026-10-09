@@ -11,6 +11,11 @@ use super::{
 
 impl ResumableUploader {
     /// Starts a new resumable upload using a synchronous backend.
+    ///
+    /// Validates options, creates one remote session, uploads chunks sequentially,
+    /// and completes with ordered parts. Only part uploads are retried; the reader
+    /// is consumed from its current position. Empty input is an error. See
+    /// [`BlockingResumableUploadBackend`] and [`ResumableUploader`] for persistence and cleanup.
     pub fn upload_blocking<B, R>(
         &self,
         backend: &B,
@@ -38,6 +43,9 @@ impl ResumableUploader {
     /// rewind a reader consumed by a previous attempt. Completed parts are read
     /// again and skipped only when their size and configured checksums match.
     /// Without checksums, the caller must ensure the source contents are unchanged.
+    /// Options/checkpoints are validated before source or backend I/O. Remote
+    /// session existence and durable checkpoint persistence belong to the caller;
+    /// the uploader does not list remote parts. See [`ResumableUploader`].
     pub fn resume_blocking<B, R>(
         &self,
         backend: &B,

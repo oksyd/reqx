@@ -8,6 +8,12 @@ use super::{
 
 impl ResumableUploader {
     /// Starts a new resumable upload using an asynchronous backend.
+    ///
+    /// Validates options, creates one remote session, uploads chunks sequentially,
+    /// and completes with ordered parts. Only part uploads are retried; the reader
+    /// is consumed from its current position. Empty input is an error. See
+    /// [`AsyncResumableUploadBackend`] and [`ResumableUploader`] for persistence and cleanup.
+    #[cfg_attr(docsrs, doc(cfg(feature = "resumable-upload-async")))]
     pub async fn upload_async<B, R>(
         &self,
         backend: &B,
@@ -37,6 +43,10 @@ impl ResumableUploader {
     /// rewind a reader consumed by a previous attempt. Completed parts are read
     /// again and skipped only when their size and configured checksums match.
     /// Without checksums, the caller must ensure the source contents are unchanged.
+    /// Options/checkpoints are validated before source or backend I/O. Remote
+    /// session existence and durable checkpoint persistence belong to the caller;
+    /// the uploader does not list remote parts. See [`ResumableUploader`].
+    #[cfg_attr(docsrs, doc(cfg(feature = "resumable-upload-async")))]
     pub async fn resume_async<B, R>(
         &self,
         backend: &B,

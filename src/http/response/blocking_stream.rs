@@ -57,6 +57,30 @@ fn deadline_exceeded_error(
 /// Use this when you want to consume large responses incrementally without
 /// buffering them into memory first.
 ///
+/// # Bytes, bounds, and completion
+///
+/// Reader operations, `into_bytes_limited`, and `copy_to_writer` yield original
+/// content-encoded bytes after HTTP framing is removed. `into_response_limited`
+/// and text/JSON conversions decode the compiled compression codecs and enforce
+/// their bound on both wire and decoded bytes. Decoding strips the corresponding
+/// encoding/length headers. Raw reads have no implicit client buffer-size limit.
+///
+/// The original total deadline continues to apply after headers are returned.
+/// Stream ownership retains request concurrency permits and completion accounting
+/// until EOF, error, or drop. Dropping an unread/partially read stream records
+/// cancellation; reading to EOF records completion. Retryable non-2xx statuses
+/// can already have recorded a resilience failure before the stream is returned.
+/// Later stream failures do not transparently resend the request.
+///
+/// Reader-trait failures are `std::io::Error` wrapping a typed `reqx::Error`;
+/// bounded/copy helpers return `reqx::Result` directly:
+///
+/// ```
+/// fn typed_failure(error: &std::io::Error) -> Option<&reqx::Error> {
+///     error.get_ref()?.downcast_ref::<reqx::Error>()
+/// }
+/// ```
+///
 /// See also `examples/blocking_streaming.rs`.
 #[cfg_attr(
     docsrs,
@@ -152,7 +176,11 @@ impl BlockingResponseStream {
         &self.method
     }
 
-    /// Returns the original request URI, including query string.
+    /// Returns the final request URI before redaction, including query string.
+    ///
+    /// After followed redirects this is the target URI that produced the final
+    /// response, not the initial URL passed to the request builder. Prefer
+    /// [`Self::uri_redacted`] for diagnostic output.
     pub fn uri_raw(&self) -> &str {
         &self.uri_raw
     }
@@ -341,6 +369,9 @@ impl BlockingResponseStream {
     }
 
     /// Buffers the stream into memory, enforcing `max_bytes`.
+    ///
+    /// Collects original content-encoded bytes. For decoded bytes, use
+    /// [`Self::into_response_limited`]. Zero accepts only an empty wire body.
     pub fn into_bytes_limited(mut self, max_bytes: usize) -> crate::Result<Bytes> {
         let mut chunk = [0_u8; 8192];
         let mut collected = Vec::new();
@@ -364,6 +395,12 @@ impl BlockingResponseStream {
     }
 
     /// Buffers and decodes the stream into a [`Response`], enforcing `max_bytes`.
+    ///
+    /// Caps both original wire bytes and decoded bytes. Unsupported or malformed
+    /// content encodings return an error when HTTP semantics permit decoding.
+    /// The original total deadline covers body
+    /// collection and is checked before and after decoding; synchronous CPU work
+    /// inside a decoder cannot be preempted. Text/JSON helpers use this conversion.
     ///
     /// See also `examples/blocking_streaming.rs`.
     pub fn into_response_limited(mut self, max_bytes: usize) -> crate::Result<Response> {

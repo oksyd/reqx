@@ -7,6 +7,12 @@ use crate::core::util::{duration_millis_ceil, lock_unpoisoned};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 /// Limits how many retries can be spent relative to recent successful traffic.
+///
+/// Disabled until configured with `Some(policy)` on a client. Defaults use a
+/// 10-second accounting window, retry ratio 0.2, and minimum allowance 3.
+/// State is shared across client clones and endpoints. Exhausted allowance
+/// returns `Error::RetryBudgetExhausted` before scheduling another attempt.
+/// Stream success credits are deferred until body completion.
 pub struct RetryBudgetPolicy {
     window: Duration,
     retry_ratio: f64,
@@ -142,6 +148,13 @@ fn refresh_retry_budget_window(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Circuit breaker thresholds for fast-failing unhealthy upstreams.
+///
+/// Disabled until configured with `Some(policy)`. Defaults open after 5 consecutive
+/// failures, wait 10 seconds, allow up to 2 concurrent half-open probes, and close
+/// after 2 successful probes. State is client-wide across clones and endpoints.
+/// Open circuits fail with `Error::CircuitOpen` instead of performing transport I/O.
+/// Retryable statuses count as failures even under the response status policy;
+/// successful stream attempts are completed when their bodies finish.
 pub struct CircuitBreakerPolicy {
     failure_threshold: usize,
     open_timeout: Duration,
@@ -490,6 +503,13 @@ impl Drop for CircuitAttempt {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 /// Adaptive concurrency limits based on observed request latency.
+///
+/// Disabled until configured with `Some(policy)`. Defaults use minimum 1,
+/// initial 8, maximum 64, increase step 1, decrease ratio 0.8, and high-latency
+/// threshold 300 ms. State is shared across client clones and endpoints.
+/// Fixed concurrency limits can also apply; each enabled control must admit the
+/// attempt. Returned streams retain adaptive permits until completion or drop.
+/// Invalid ranges/ratios are rejected when constructing the client.
 pub struct AdaptiveConcurrencyPolicy {
     min_limit: usize,
     initial_limit: usize,

@@ -123,6 +123,9 @@ impl ClientBuilder {
     }
 
     /// Sets a PKCS#12 client identity for mTLS.
+    ///
+    /// Supported only by the native TLS backend. Rustls backends require
+    /// [`Self::tls_client_identity_pem`] and reject PKCS#12 at `build()`.
     pub fn tls_client_identity_pkcs12(
         mut self,
         identity_der: impl Into<Vec<u8>>,

@@ -145,6 +145,14 @@ fn contains_scope_token(value: &str, tokens: &[&str]) -> bool {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 /// Token-bucket limits used for client-side request pacing.
+///
+/// Disabled until configured on a client. Defaults allow 50 requests per second,
+/// a burst of 50, and at most 30 seconds of server-induced throttling per hint.
+/// Each retry/redirect transport attempt acquires pacing capacity. Global
+/// limiters are shared across client clones; per-host limiters use normalized
+/// hostnames plus effective ports. Queue waits consume the overall deadline.
+/// Server hints are mapped by [`ServerThrottleScope`]; the request retry policy
+/// separately controls status backoff and its `Retry-After` ceiling.
 pub struct RateLimitPolicy {
     requests_per_second: f64,
     burst: usize,

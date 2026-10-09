@@ -15,6 +15,18 @@ use crate::core::util::truncate_body;
 
 #[derive(Clone)]
 /// Fully buffered HTTP response body and metadata.
+///
+/// Both transport modes return this type after consuming the body. Enabled
+/// content encodings have been decoded within the response limit, except when
+/// HTTP semantics preserve bytes (for example HEAD/range responses). Successful
+/// decoding removes the original `Content-Encoding` and `Content-Length` headers.
+///
+/// Text helpers interpret UTF-8 and do not implement charset negotiation.
+/// JSON helpers deserialize the bytes with Serde independently of the status
+/// and `Content-Type`; transport status handling happened before this value was
+/// returned. Text/JSON conversion errors do not retry the completed request.
+/// `body()` borrows the current bytes; consuming text helpers can reuse an owned
+/// allocation. Raw content-encoded bytes are available from a response stream.
 pub struct Response {
     status: StatusCode,
     headers: HeaderMap,
@@ -51,7 +63,7 @@ impl Response {
         &self.headers
     }
 
-    /// Returns the raw response body bytes.
+    /// Returns the buffered body bytes, after supported HTTP content decoding.
     pub fn body(&self) -> &Bytes {
         &self.body
     }

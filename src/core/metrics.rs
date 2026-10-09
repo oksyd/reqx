@@ -12,7 +12,26 @@ use crate::core::util::lock_unpoisoned;
 
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
-/// Snapshot of client-side transport metrics.
+/// Snapshot of client-side transport metrics shared across client clones.
+///
+/// Enabled with `metrics_enabled(true)`; otherwise the in-process counters are
+/// zero. OpenTelemetry emission is configured separately. One logical request
+/// increments `started`; scheduled retries increment `retries`. Configuration
+/// failures before request preparation completes are outside request accounting.
+///
+/// A buffered request completes before its response is returned. A returned
+/// stream remains in flight until EOF, failure, or drop; unread/partial drops
+/// count as cancellation. Response status counts describe terminal request
+/// completions, not every intermediate retry/redirect response.
+///
+/// `succeeded` counts transport results under the chosen status policy. A
+/// non-2xx response returned by the response policy can therefore count as
+/// succeeded while still being a circuit-breaker/retry-budget failure.
+/// Later UTF-8/JSON conversion is outside transport accounting.
+///
+/// Counters are sampled independently across concurrent activity; a snapshot
+/// is not a single atomic ledger. Compare aggregate fields after requests have
+/// completed when exact totals matter.
 pub struct MetricsSnapshot {
     /// Request lifecycle counters.
     pub requests: RequestMetrics,

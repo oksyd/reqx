@@ -7,7 +7,19 @@ use http::Method;
 use crate::core::retry::RetryPolicy;
 use crate::core::util::validate_base_url;
 
-/// Chooses the base URL used for an outbound request.
+/// Chooses the base URL for a logical request's relative path.
+///
+/// Called once during preparation, before queueing and attempts. Retries reuse
+/// that selection; redirects use their target URI. Absolute HTTP(S) request URLs
+/// replace the base URL after this callback. The returned base must be valid
+/// HTTP(S) and is validated before network I/O.
+///
+/// Return `Cow::Borrowed` for a configured or internally stored URL, and
+/// `Cow::Owned` for a newly constructed one. The lifetime permits borrowing from
+/// either `self` or `configured_base_url`. Implementations are shared via `Arc`,
+/// can receive concurrent calls, and run synchronously; selection is not automatic
+/// per-attempt failover. `path` is the caller's request path and can contain query
+/// data, whereas observer request contexts carry redacted URIs.
 pub trait EndpointSelector: Send + Sync {
     /// Returns the base URL that should be used for this request.
     fn select_base_url<'a>(
@@ -20,6 +32,26 @@ pub trait EndpointSelector: Send + Sync {
 
 #[derive(Debug)]
 /// Endpoint selector that cycles through a fixed list of base URLs.
+///
+/// Rotation is per logical request and shared across all clients using the same
+/// `Arc`. Concurrent call order is not guaranteed. Endpoints are validated during
+/// construction; the list is immutable afterwards.
+///
+/// ```
+/// # #[cfg(feature = "_async")]
+/// # fn example() -> reqx::Result<()> {
+/// use std::sync::Arc;
+/// use reqx::advanced::RoundRobinEndpointSelector;
+/// let selector = RoundRobinEndpointSelector::new([
+///     "https://api-a.example.com/v1",
+///     "https://api-b.example.com/v1",
+/// ])?;
+/// let client = reqx::Client::builder("https://api.example.com/v1")
+///     .endpoint_selector(Some(Arc::new(selector)))
+///     .build()?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct RoundRobinEndpointSelector {
     endpoints: Vec<String>,
     next: AtomicUsize,
@@ -62,7 +94,14 @@ impl EndpointSelector for RoundRobinEndpointSelector {
     }
 }
 
-/// Provides the delay used before retrying a failed request.
+/// Provides the fallback delay used before retrying a failed request.
+///
+/// `attempt` is one-based: `1` computes the wait before the second attempt.
+/// The policy is the effective request policy, including an explicit override.
+/// Server `Retry-After` hints can replace the fallback and the overall deadline
+/// bounds waits. This hook changes delays, not retry eligibility or attempt caps.
+/// It runs synchronously and should return promptly; actual sleeps are performed
+/// by the client runtime. `None` in the builder uses `RetryPolicy::backoff_for_retry`.
 pub trait BackoffSource: Send + Sync {
     /// Returns the retry backoff for `attempt`.
     fn backoff_for_retry(&self, retry_policy: &RetryPolicy, attempt: usize) -> Duration;
