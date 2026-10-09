@@ -1,8 +1,25 @@
+## [0.2.8] - 2026-10-09
+
+### 🐛 Bug Fixes
+
+- Ci
+
+### 🚜 Refactor
+
+- Simplify client and resumable upload APIs
+
+### ⚙️ Miscellaneous Tasks
+
+- *(ci)* Update
 ## [0.2.7] - 2026-09-24
 
 ### 🚀 Features
 
 - *(tls)* Add Graviola backends for async and blocking clients
+
+### ⚙️ Miscellaneous Tasks
+
+- Release reqx version 0.2.7
 ## [0.2.6] - 2026-09-24
 
 ### 🚀 Features
