@@ -11,6 +11,7 @@
 ### ⚙️ Miscellaneous Tasks
 
 - *(ci)* Update
+- Release reqx version 0.2.8
 ## [0.2.7] - 2026-09-24
 
 ### 🚀 Features
