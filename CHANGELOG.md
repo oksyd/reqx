@@ -3,6 +3,7 @@
 ### ⚙️ Miscellaneous Tasks
 
 - *(docs)* Update
+- Release reqx version 0.2.10
 ## [0.2.9] - 2026-10-09
 
 ### ⚙️ Miscellaneous Tasks
