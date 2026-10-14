@@ -54,8 +54,8 @@ blocking-tls-native = ["_blocking", "dep:native-tls", "ureq/native-tls"]
 otel = ["dep:opentelemetry"]
 
 [dependencies]
-tokio = { version = "1.53.2", default-features = false, features = ["io-util", "rt", "sync", "time"], optional = true }
-tokio-util = { version = "0.7.19", default-features = false, features = ["io"], optional = true }
+tokio = { version = "1.53.3", default-features = false, features = ["io-util", "rt", "sync", "time"], optional = true }
+tokio-util = { version = "0.7.20", default-features = false, features = ["io"], optional = true }
 futures-core = { version = "0.3.34", default-features = false, features = ["std"], optional = true }
 futures-util = { version = "0.3.34", default-features = false, features = ["std"], optional = true }
 bytes = { version = "1.12.1", default-features = false, features = ["std"] }
@@ -72,7 +72,7 @@ url = { version = "2.5.8", default-features = false, features = ["std"] }
 hyper-rustls = { version = "0.27.10", default-features = false, features = ["http1", "http2", "webpki-tokio"], optional = true }
 rustls = { version = "0.23.45", default-features = false, features = ["std", "tls12"], optional = true }
 rustls-graviola = { version = "0.4.0", default-features = false, optional = true }
-rustls-native-certs = { version = "0.8.4", optional = true }
+rustls-native-certs = { version = "0.8.5", optional = true }
 hyper-tls = { version = "0.6.0", default-features = false, optional = true }
 native-tls = { version = "0.2.18", optional = true }
 webpki-root-certs = { version = "1.0.9", optional = true }
@@ -81,25 +81,25 @@ webpki-roots = { version = "1.0.9", optional = true }
 ureq = { version = "3.4.2", default-features = false, optional = true }
 
 serde = { version = "1.0.229", default-features = false, features = ["std"] }
-serde_json = { version = "1.0.151", default-features = false, features = ["std"] }
+serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
 serde_urlencoded = { version = "0.7.1", default-features = false }
 md5 = { version = "0.8.1", default-features = false, optional = true }
-sha2 = { version = "0.11.0", default-features = false, optional = true }
+sha2 = { version = "0.11.1", default-features = false, optional = true }
 
 brotli = { version = "9.0.0", default-features = false, features = ["std"], optional = true }
 flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"], optional = true }
-zstd = { version = "0.14.0", default-features = false, optional = true }
+zstd = { version = "0.14.2", default-features = false, optional = true }
 
 thiserror = { version = "2.0.21", default-features = false, features = ["std"] }
 rand = { version = "0.10.3", default-features = false, features = ["thread_rng"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
-opentelemetry = { version = "0.33.0", default-features = false, features = ["metrics", "trace"], optional = true }
+opentelemetry = { version = "0.33.1", default-features = false, features = ["metrics", "trace"], optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8.2", default-features = false, features = ["async_tokio"] }
 rcgen = "0.14.10"
 rustls-graviola = "0.4.0"
-tokio = { version = "1.53.2", default-features = false, features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.53.3", default-features = false, features = ["macros", "rt-multi-thread"] }
 tokio-rustls = { version = "0.26.6", default-features = false }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry", "std"] }
 flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
